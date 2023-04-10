@@ -23,10 +23,10 @@ fn main() -> anyhow::Result<()> {
     let mut input = stdin.lines();
     let mut node = Node::new(&mut input, &mut stdout)?;
 
-    node.run(&mut input, &mut stdout, |msg_id, line| {
+    node.run(&mut input, &mut stdout, |node, line| {
         let msg: Message<Echo> = serde_json::from_str(&line).context("Invalid message")?;
         let reply = msg.reply(
-            Some(msg_id),
+            Some(node.msg_id),
             EchoOk {
                 echo: msg.body.payload.echo.clone(),
             },

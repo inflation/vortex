@@ -20,14 +20,13 @@ fn main() -> anyhow::Result<()> {
 
     let mut input = stdin.lines();
     let mut node = Node::new(&mut input, &mut stdout)?;
-    let id = node.id.clone();
 
-    node.run(&mut input, &mut stdout, |msg_id, line| {
+    node.run(&mut input, &mut stdout, |node, line| {
         let msg: Message<Generate> = serde_json::from_str(&line).context("Invalid message")?;
         let reply = msg.reply(
-            Some(msg_id),
+            Some(node.msg_id),
             GenerateOk {
-                id: format!("{}-{}", id, msg_id),
+                id: format!("{}-{}", node.id, node.msg_id),
             },
         );
         Ok(reply)

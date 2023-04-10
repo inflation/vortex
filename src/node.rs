@@ -1,4 +1,7 @@
-use std::io::{Lines, StdinLock, StdoutLock, Write};
+use std::{
+    collections::HashMap,
+    io::{Lines, StdinLock, StdoutLock, Write},
+};
 
 use anyhow::Context;
 use serde::Serialize;
@@ -8,6 +11,8 @@ use crate::message::{Body, Init, InitOk, Message};
 pub struct Node {
     pub id: String,
     pub msg_id: u32,
+    pub messages: Vec<i32>,
+    pub topology: HashMap<String, Vec<String>>,
 }
 
 impl Node {
@@ -30,6 +35,8 @@ impl Node {
         Ok(Self {
             id: init_msg.body.payload.node_id,
             msg_id: 1,
+            messages: vec![],
+            topology: HashMap::new(),
         })
     }
 
@@ -40,12 +47,14 @@ impl Node {
         f: F,
     ) -> anyhow::Result<()>
     where
-        F: Fn(u32, String) -> anyhow::Result<Message<P>>,
+        F: Fn(&mut Self, String) -> anyhow::Result<Message<P>>,
         P: Serialize,
     {
         for line in input {
             let line = line?;
-            serde_json::to_writer(&mut *stdout, &f(self.msg_id, line)?)?;
+            dbg!(&line);
+
+            serde_json::to_writer(&mut *stdout, &f(self, line)?)?;
             writeln!(stdout)?;
             self.msg_id += 1;
         }
