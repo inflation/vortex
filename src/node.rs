@@ -6,6 +6,7 @@ use serde::Serialize;
 use crate::message::{Body, Init, InitOk, Message};
 
 pub struct Node {
+    pub id: String,
     pub msg_id: u32,
 }
 
@@ -26,7 +27,10 @@ impl Node {
         serde_json::to_writer(&mut *output, &reply)?;
         writeln!(output)?;
 
-        Ok(Self { msg_id: 1 })
+        Ok(Self {
+            id: init_msg.body.payload.node_id,
+            msg_id: 1,
+        })
     }
 
     pub fn run<F, P>(

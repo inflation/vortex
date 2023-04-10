@@ -5,15 +5,13 @@ use serde::{Deserialize, Serialize};
 use vortex::{message::Message, node::Node};
 
 #[derive(Deserialize, Serialize, Debug)]
-#[serde(tag = "type", rename = "echo")]
-struct Echo {
-    echo: String,
-}
+#[serde(tag = "type", rename = "generate")]
+struct Generate {}
 
 #[derive(Deserialize, Serialize, Debug)]
-#[serde(tag = "type", rename = "echo_ok")]
-struct EchoOk {
-    echo: String,
+#[serde(tag = "type", rename = "generate_ok")]
+struct GenerateOk {
+    id: String,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -22,13 +20,14 @@ fn main() -> anyhow::Result<()> {
 
     let mut input = stdin.lines();
     let mut node = Node::new(&mut input, &mut stdout)?;
+    let id = node.id.clone();
 
     node.run(&mut input, &mut stdout, |msg_id, line| {
-        let msg: Message<Echo> = serde_json::from_str(&line).context("Invalid message")?;
+        let msg: Message<Generate> = serde_json::from_str(&line).context("Invalid message")?;
         let reply = msg.reply(
             Some(msg_id),
-            EchoOk {
-                echo: msg.body.payload.echo.clone(),
+            GenerateOk {
+                id: format!("{}-{}", id, msg_id),
             },
         );
         Ok(reply)

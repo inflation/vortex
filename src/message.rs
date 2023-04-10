@@ -19,10 +19,24 @@ pub struct Body<P> {
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(tag = "type", rename = "init")]
 pub struct Init {
-    node_id: String,
-    node_ids: Vec<String>,
+    pub node_id: String,
+    pub node_ids: Vec<String>,
 }
 
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(tag = "type", rename = "init_ok")]
 pub struct InitOk {}
+
+impl<P> Message<P> {
+    pub fn reply<U>(&self, msg_id: Option<u32>, msg: U) -> Message<U> {
+        Message {
+            src: self.dst.clone(),
+            dst: self.src.clone(),
+            body: Body {
+                msg_id,
+                in_reply_to: self.body.msg_id,
+                payload: msg,
+            },
+        }
+    }
+}
