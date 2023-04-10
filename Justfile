@@ -14,7 +14,7 @@ test-id: build
         --node-count 3 --availability total --nemesis partition
 
 test-br: build
-    {{MAELSTROM_BIN}} test -w broadcast --bin {{TARGET_BR}} --node-count 1 --time-limit 20 \
+    {{MAELSTROM_BIN}} test -w broadcast --bin {{TARGET_BR}} --node-count 5 --time-limit 20 \
         --rate 10
 
 

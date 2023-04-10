@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::HashSet,
     io::{Lines, StdinLock, StdoutLock, Write},
 };
 
@@ -11,8 +11,8 @@ use crate::message::{Body, Init, InitOk, Message};
 pub struct Node {
     pub id: String,
     pub msg_id: u32,
-    pub messages: Vec<i32>,
-    pub topology: HashMap<String, Vec<String>>,
+    pub messages: HashSet<i32>,
+    pub peers: Vec<String>,
 }
 
 impl Node {
@@ -35,8 +35,8 @@ impl Node {
         Ok(Self {
             id: init_msg.body.payload.node_id,
             msg_id: 1,
-            messages: vec![],
-            topology: HashMap::new(),
+            messages: HashSet::new(),
+            peers: vec![],
         })
     }
 
@@ -52,13 +52,23 @@ impl Node {
     {
         for line in input {
             let line = line?;
-            dbg!(&line);
-
             serde_json::to_writer(&mut *stdout, &f(self, line)?)?;
             writeln!(stdout)?;
             self.msg_id += 1;
         }
 
         Ok(())
+    }
+
+    pub fn send<U>(&self, peer: String, msg: U) -> Message<U> {
+        Message {
+            src: self.id.clone(),
+            dst: peer,
+            body: Body {
+                msg_id: Some(self.msg_id),
+                in_reply_to: None,
+                payload: msg,
+            },
+        }
     }
 }

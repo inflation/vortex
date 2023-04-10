@@ -1,15 +1,19 @@
-use std::{collections::HashMap, io::BufRead};
+use std::{
+    collections::{HashMap, HashSet},
+    io::{BufRead, Write},
+};
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use vortex::{message::Message, node::Node};
 
-#[derive(Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum Request {
     Broadcast {
         message: i32,
     },
+    BroadcastOk {},
     Read,
     Topology {
         topology: HashMap<String, Vec<String>>,
@@ -20,8 +24,7 @@ enum Request {
 #[serde(tag = "type", rename_all = "snake_case")]
 #[allow(clippy::enum_variant_names)]
 enum Response {
-    BroadcastOk {},
-    ReadOk { messages: Vec<i32> },
+    ReadOk { messages: HashSet<i32> },
     TopologyOk {},
 }
 
@@ -32,28 +35,60 @@ fn main() -> anyhow::Result<()> {
     let mut input = stdin.lines();
     let mut node = Node::new(&mut input, &mut stdout)?;
 
-    node.run(&mut input, &mut stdout, |node, line| {
+    for line in input {
+        let line = line.context("Failed to read message")?;
         let msg: Message<Request> = serde_json::from_str(&line).context("Invalid message")?;
 
-        let reply: Message<Response> = match msg.body.payload {
+        match msg.body.payload {
             Request::Broadcast { message } => {
-                node.messages.push(message);
-                msg.reply(Some(node.msg_id), Response::BroadcastOk {})
+                node.messages.insert(message);
+                serde_json::to_writer(
+                    &mut stdout,
+                    &msg.reply(Some(node.msg_id), Request::BroadcastOk {}),
+                )?;
+                writeln!(stdout)?;
+                node.msg_id += 1;
+
+                for peer in &node.peers {
+                    if peer == &msg.src {
+                        continue;
+                    }
+
+                    serde_json::to_writer(
+                        &mut stdout,
+                        &node.send(peer.clone(), Request::Broadcast { message }),
+                    )?;
+                    writeln!(stdout)?;
+                    node.msg_id += 1;
+                }
             }
-            Request::Read => msg.reply(
-                Some(node.msg_id),
-                Response::ReadOk {
-                    messages: node.messages.clone(),
-                },
-            ),
+            Request::BroadcastOk {} => {}
+            Request::Read => {
+                serde_json::to_writer(
+                    &mut stdout,
+                    &msg.reply(
+                        Some(node.msg_id),
+                        Response::ReadOk {
+                            messages: node.messages.clone(),
+                        },
+                    ),
+                )?;
+                writeln!(stdout)?;
+                node.msg_id += 1;
+            }
             Request::Topology { ref topology } => {
-                node.topology = topology.clone();
-                msg.reply(Some(node.msg_id), Response::TopologyOk {})
+                if let Some(peers) = topology.get(&node.id) {
+                    node.peers = peers.clone();
+                }
+                serde_json::to_writer(
+                    &mut stdout,
+                    &msg.reply(Some(node.msg_id), Response::TopologyOk {}),
+                )?;
+                writeln!(stdout)?;
+                node.msg_id += 1;
             }
         };
-
-        Ok(reply)
-    })?;
+    }
 
     Ok(())
 }
