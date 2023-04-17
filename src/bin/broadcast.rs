@@ -1,93 +1,82 @@
-use std::{
-    collections::{HashMap, HashSet},
-    io::{BufRead, Write},
-};
+use std::{collections::HashMap, sync::Arc};
 
-use anyhow::Context;
 use serde::{Deserialize, Serialize};
+use tinyset::SetU32;
+
+use tracing::{debug, info, instrument, Level};
 use vortex::{message::Message, node::Node};
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
-enum Request {
+pub enum Payload {
     Broadcast {
-        message: i32,
+        message: u32,
     },
-    BroadcastOk {},
+    BroadcastOk,
     Read,
+    ReadOk {
+        messages: SetU32,
+    },
     Topology {
         topology: HashMap<String, Vec<String>>,
     },
+    TopologyOk,
 }
 
-#[derive(Serialize, Debug)]
-#[serde(tag = "type", rename_all = "snake_case")]
-#[allow(clippy::enum_variant_names)]
-enum Response {
-    ReadOk { messages: HashSet<i32> },
-    TopologyOk {},
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt()
+        .with_max_level(Level::DEBUG)
+        .with_writer(std::io::stderr)
+        .init();
+
+    let node = Arc::new(Node::new()?);
+    info!("Starting node...");
+
+    while let Some(msg) = node.in_chan.lock().await.recv().await {
+        tokio::spawn(handle_msg(msg, node.clone()));
+    }
+
+    Ok(())
 }
 
-fn main() -> anyhow::Result<()> {
-    let stdin = std::io::stdin().lock();
-    let mut stdout = std::io::stdout().lock();
+#[instrument(skip(node))]
+async fn handle_msg(msg: Message<Payload>, node: Arc<Node<Payload>>) -> anyhow::Result<()> {
+    match msg.body.payload {
+        Payload::Broadcast { message } => {
+            debug!("Broadcasting message {:#?}", msg.body);
+            node.messages.lock().insert(message);
+            node.reply(&msg, Payload::BroadcastOk).await?;
 
-    let mut input = stdin.lines();
-    let mut node = Node::new(&mut input, &mut stdout)?;
-
-    for line in input {
-        let line = line.context("Failed to read message")?;
-        let msg: Message<Request> = serde_json::from_str(&line).context("Invalid message")?;
-
-        match msg.body.payload {
-            Request::Broadcast { message } => {
-                node.messages.insert(message);
-                serde_json::to_writer(
-                    &mut stdout,
-                    &msg.reply(Some(node.msg_id), Request::BroadcastOk {}),
-                )?;
-                writeln!(stdout)?;
-                node.msg_id += 1;
-
-                for peer in &node.peers {
-                    if peer == &msg.src {
-                        continue;
-                    }
-
-                    serde_json::to_writer(
-                        &mut stdout,
-                        &node.send(peer.clone(), Request::Broadcast { message }),
-                    )?;
-                    writeln!(stdout)?;
-                    node.msg_id += 1;
+            let peers = node.peers.lock().clone();
+            for peer in peers.iter() {
+                if peer == &msg.src {
+                    continue;
                 }
+
+                node.rpc(peer.clone(), Payload::Broadcast { message })
+                    .await?;
             }
-            Request::BroadcastOk {} => {}
-            Request::Read => {
-                serde_json::to_writer(
-                    &mut stdout,
-                    &msg.reply(
-                        Some(node.msg_id),
-                        Response::ReadOk {
-                            messages: node.messages.clone(),
-                        },
-                    ),
-                )?;
-                writeln!(stdout)?;
-                node.msg_id += 1;
+        }
+        Payload::BroadcastOk => {
+            debug!("Received broadcast ok {:#?}", msg.body);
+            let token = format!("{}:{}", msg.src, msg.body.in_reply_to.unwrap());
+            let (_, tx) = node.pending_broadcasts.remove(&token).unwrap();
+            tx.send(()).ok();
+        }
+        Payload::Read => {
+            let messages = node.messages.lock().clone();
+            node.reply(&msg, Payload::ReadOk { messages }).await?;
+        }
+        Payload::ReadOk { messages: _ } => {}
+        Payload::Topology { ref topology } => {
+            debug!("Received topology {topology:#?}");
+            if let Some(peers) = topology.get(&node.id) {
+                *node.peers.lock() = peers.clone();
             }
-            Request::Topology { ref topology } => {
-                if let Some(peers) = topology.get(&node.id) {
-                    node.peers = peers.clone();
-                }
-                serde_json::to_writer(
-                    &mut stdout,
-                    &msg.reply(Some(node.msg_id), Response::TopologyOk {}),
-                )?;
-                writeln!(stdout)?;
-                node.msg_id += 1;
-            }
-        };
+            node.reply(&msg, Payload::TopologyOk).await?;
+        }
+        Payload::TopologyOk => {}
     }
 
     Ok(())

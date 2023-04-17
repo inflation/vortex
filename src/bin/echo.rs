@@ -1,38 +1,37 @@
-use std::io::BufRead;
+use std::sync::Arc;
 
-use anyhow::Context;
+use anyhow::bail;
 use serde::{Deserialize, Serialize};
+use tracing::instrument;
 use vortex::{message::Message, node::Node};
 
-#[derive(Deserialize, Serialize, Debug)]
-#[serde(tag = "type", rename = "echo")]
-struct Echo {
-    echo: String,
+#[derive(Deserialize, Serialize, Debug, Clone)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum Payload {
+    Echo { echo: String },
+    EchoOk { echo: String },
 }
 
-#[derive(Deserialize, Serialize, Debug)]
-#[serde(tag = "type", rename = "echo_ok")]
-struct EchoOk {
-    echo: String,
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> anyhow::Result<()> {
+    let node = Arc::new(Node::new()?);
+
+    while let Some(msg) = node.in_chan.lock().await.recv().await {
+        tokio::spawn(handle_msg(msg, node.clone()));
+    }
+
+    Ok(())
 }
 
-fn main() -> anyhow::Result<()> {
-    let stdin = std::io::stdin().lock();
-    let mut stdout = std::io::stdout().lock();
-
-    let mut input = stdin.lines();
-    let mut node = Node::new(&mut input, &mut stdout)?;
-
-    node.run(&mut input, &mut stdout, |node, line| {
-        let msg: Message<Echo> = serde_json::from_str(&line).context("Invalid message")?;
-        let reply = msg.reply(
-            Some(node.msg_id),
-            EchoOk {
-                echo: msg.body.payload.echo.clone(),
-            },
-        );
-        Ok(reply)
-    })?;
+#[instrument(skip(node))]
+async fn handle_msg(msg: Message<Payload>, node: Arc<Node<Payload>>) -> anyhow::Result<()> {
+    match &msg.body.payload {
+        Payload::Echo { echo } => {
+            node.reply(&msg, Payload::EchoOk { echo: echo.clone() })
+                .await?;
+        }
+        _ => bail!("Unexpected msg: {msg:?}"),
+    }
 
     Ok(())
 }

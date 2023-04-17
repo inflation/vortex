@@ -1,6 +1,17 @@
+use std::fmt::Debug;
+
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize, Debug)]
+pub trait Payload:
+    for<'a> Deserialize<'a> + Serialize + Debug + Clone + Send + Sync + 'static
+{
+}
+impl<P> Payload for P where
+    P: for<'a> Deserialize<'a> + Serialize + Debug + Clone + Send + Sync + 'static
+{
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Message<P> {
     pub src: String,
     #[serde(rename = "dest")]
@@ -8,7 +19,7 @@ pub struct Message<P> {
     pub body: Body<P>,
 }
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct Body<P> {
     pub msg_id: Option<u32>,
     pub in_reply_to: Option<u32>,
@@ -16,27 +27,13 @@ pub struct Body<P> {
     pub payload: P,
 }
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(tag = "type", rename = "init")]
 pub struct Init {
     pub node_id: String,
     pub node_ids: Vec<String>,
 }
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(tag = "type", rename = "init_ok")]
 pub struct InitOk {}
-
-impl<P> Message<P> {
-    pub fn reply<U>(&self, msg_id: Option<u32>, msg: U) -> Message<U> {
-        Message {
-            src: self.dst.clone(),
-            dst: self.src.clone(),
-            body: Body {
-                msg_id,
-                in_reply_to: self.body.msg_id,
-                payload: msg,
-            },
-        }
-    }
-}

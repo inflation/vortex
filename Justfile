@@ -1,21 +1,20 @@
 MAELSTROM_BIN := "/opt/apps/maelstrom/maelstrom"
-TARGET_ECHO := "target/debug/echo"
-TARGET_ID := "target/debug/unique-id"
-TARGET_BR := "target/debug/broadcast"
+TARGET_DIR := "target/debug"
 
-build:
-    cargo build
+build target:
+    cargo build --bin {{target}}
 
-test-echo: build
-    {{MAELSTROM_BIN}} test -w echo --bin {{TARGET_ECHO}} --node-count 1 --time-limit 10
+test-echo: (build "echo")
+    {{MAELSTROM_BIN}} test -w echo --bin {{TARGET_DIR}}/echo --node-count 1 --time-limit 10
 
-test-id: build
-    {{MAELSTROM_BIN}} test -w unique-ids --bin {{TARGET_ID}} --time-limit 30 --rate 1000 \
+test-id: (build "unique-id")
+    {{MAELSTROM_BIN}} test -w unique-ids --bin {{TARGET_DIR}}/unique-id --time-limit 30 --rate 1000 \
         --node-count 3 --availability total --nemesis partition
 
-test-br: build
-    {{MAELSTROM_BIN}} test -w broadcast --bin {{TARGET_BR}} --node-count 5 --time-limit 20 \
-        --rate 10
+test-br: (build "broadcast")
+    {{MAELSTROM_BIN}} test -w broadcast --bin {{TARGET_DIR}}/broadcast --node-count 5 --time-limit 20 \
+        --rate 10 \
+        --nemesis partition
 
 
 serve:
