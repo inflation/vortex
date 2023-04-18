@@ -7,6 +7,7 @@ use std::{
 use anyhow::Context;
 use dashmap::DashMap;
 use parking_lot::Mutex;
+use serde_json::Value;
 use tinyset::SetU32;
 use tokio::{
     sync::{mpsc, oneshot},
@@ -19,24 +20,18 @@ use crate::{
 };
 
 #[derive(Debug)]
-pub struct Node<P>
-where
-    P: Payload,
-{
+pub struct Node {
     pub id: String,
     pub msg_id: AtomicU32,
     pub messages: Mutex<SetU32>,
     pub peers: Mutex<Vec<String>>,
-    pub in_chan: tokio::sync::Mutex<mpsc::Receiver<Message<P>>>,
-    pub out_chan: mpsc::Sender<Message<P>>,
+    pub in_chan: tokio::sync::Mutex<mpsc::Receiver<Message<Value>>>,
+    pub out_chan: mpsc::Sender<Message<Value>>,
     pub handles: [JoinHandle<anyhow::Result<()>>; 2],
-    pub pending_broadcasts: DashMap<String, oneshot::Sender<()>>,
+    pub pending_reply: DashMap<String, oneshot::Sender<Value>>,
 }
 
-impl<P> Node<P>
-where
-    P: Payload,
-{
+impl Node {
     pub fn new() -> anyhow::Result<Self> {
         let mut line = String::new();
         std::io::stdin()
@@ -61,8 +56,8 @@ where
         let (tx_in, rx_in) = mpsc::channel(8);
         let (tx_out, rx_out) = mpsc::channel(8);
 
-        let stdin = tokio::task::spawn_blocking(|| stdin::<P>(tx_in));
-        let stdout = tokio::task::spawn_blocking(|| stdout::<P>(rx_out));
+        let stdin = tokio::task::spawn_blocking(|| stdin(tx_in));
+        let stdout = tokio::task::spawn_blocking(|| stdout(rx_out));
 
         Ok(Self {
             id: init_msg.body.payload.node_id,
@@ -72,11 +67,11 @@ where
             in_chan: tokio::sync::Mutex::new(rx_in),
             out_chan: tx_out,
             handles: [stdin, stdout],
-            pending_broadcasts: DashMap::new(),
+            pending_reply: DashMap::new(),
         })
     }
 
-    pub async fn send(&self, peer: String, msg: P) -> anyhow::Result<u32> {
+    pub async fn send(&self, peer: String, msg: impl Payload) -> anyhow::Result<u32> {
         let id = self.msg_id.load(Ordering::Relaxed);
         self.out_chan
             .send(Message {
@@ -85,7 +80,7 @@ where
                 body: Body {
                     msg_id: Some(id),
                     in_reply_to: None,
-                    payload: msg,
+                    payload: serde_json::to_value(msg)?,
                 },
             })
             .await?;
@@ -94,7 +89,7 @@ where
         Ok(id)
     }
 
-    pub async fn reply<T>(&self, from: &Message<T>, msg: P) -> anyhow::Result<()> {
+    pub async fn reply<T>(&self, from: &Message<T>, msg: impl Payload) -> anyhow::Result<()> {
         self.out_chan
             .send(Message {
                 src: from.dst.clone(),
@@ -102,7 +97,7 @@ where
                 body: Body {
                     msg_id: Some(self.msg_id.load(Ordering::Relaxed)),
                     in_reply_to: from.body.msg_id,
-                    payload: msg,
+                    payload: serde_json::to_value(msg)?,
                 },
             })
             .await?;
@@ -111,7 +106,10 @@ where
         Ok(())
     }
 
-    pub async fn rpc(&self, peer: String, msg: P) -> anyhow::Result<()> {
+    pub async fn rpc<P>(&self, peer: String, msg: P) -> anyhow::Result<Value>
+    where
+        P: Payload,
+    {
         let msg_id = self.msg_id.load(Ordering::Relaxed);
         let msg = Message {
             src: self.id.clone(),
@@ -119,7 +117,7 @@ where
             body: Body {
                 msg_id: Some(msg_id),
                 in_reply_to: None,
-                payload: msg,
+                payload: serde_json::to_value(msg)?,
             },
         };
         self.out_chan.send(msg.clone()).await?;
@@ -127,18 +125,28 @@ where
 
         let token = format!("{}:{msg_id}", peer);
         let (tx, mut rx) = oneshot::channel();
-        self.pending_broadcasts.insert(token.clone(), tx);
+        self.pending_reply.insert(token.clone(), tx);
 
         loop {
             tokio::select!(
                 _ = tokio::time::sleep(Duration::from_secs(1)) => {
                     self.out_chan.send(msg.clone()).await?;
                 }
-                _ = &mut rx => {
-                    self.pending_broadcasts.remove(&token);
-                    return Ok(());
+                res = &mut rx => {
+                    self.pending_reply.remove(&token);
+                    return Ok(res?);
                 }
             )
+        }
+    }
+
+    pub fn ack(&self, msg: Message<Value>, val: Option<Value>) {
+        let token = format!("seq-kv:{}", msg.body.in_reply_to.unwrap());
+        let (_, tx) = self.pending_reply.remove(&token).unwrap();
+        if let Some(val) = val {
+            tx.send(val).unwrap();
+        } else {
+            tx.send(().into()).unwrap();
         }
     }
 }

@@ -1,12 +1,13 @@
 use std::io::{BufRead, Write};
 
 use anyhow::Context;
+use serde_json::Value;
 use tokio::sync::mpsc;
 use tracing::{debug, error};
 
-use crate::message::{Message, Payload};
+use crate::message::Message;
 
-pub fn stdin<P: Payload>(tx: mpsc::Sender<Message<P>>) -> anyhow::Result<()> {
+pub fn stdin(tx: mpsc::Sender<Message<Value>>) -> anyhow::Result<()> {
     for line in std::io::stdin().lock().lines() {
         let line = line.context("Failed to read message")?;
         debug!("Received message: {line}");
@@ -20,9 +21,8 @@ pub fn stdin<P: Payload>(tx: mpsc::Sender<Message<P>>) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn stdout<P: Payload>(mut rx: mpsc::Receiver<Message<P>>) -> anyhow::Result<()> {
-    // let mut output = std::io::stdout().lock();
-    let mut output = std::io::stdout();
+pub fn stdout(mut rx: mpsc::Receiver<Message<Value>>) -> anyhow::Result<()> {
+    let mut output = std::io::stdout().lock();
 
     while let Some(msg) = rx.blocking_recv() {
         serde_json::to_writer(&mut output, &msg)?;

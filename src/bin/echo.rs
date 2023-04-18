@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use anyhow::bail;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use tracing::instrument;
 use vortex::{message::Message, node::Node};
 
@@ -24,11 +25,10 @@ async fn main() -> anyhow::Result<()> {
 }
 
 #[instrument(skip(node))]
-async fn handle_msg(msg: Message<Payload>, node: Arc<Node<Payload>>) -> anyhow::Result<()> {
-    match &msg.body.payload {
+async fn handle_msg(msg: Message<Value>, node: Arc<Node>) -> anyhow::Result<()> {
+    match Payload::deserialize(&msg.body.payload)? {
         Payload::Echo { echo } => {
-            node.reply(&msg, Payload::EchoOk { echo: echo.clone() })
-                .await?;
+            node.reply(&msg, Payload::EchoOk { echo }).await?;
         }
         _ => bail!("Unexpected msg: {msg:?}"),
     }

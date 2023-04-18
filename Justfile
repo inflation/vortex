@@ -8,14 +8,17 @@ test-echo: (build "echo")
     {{MAELSTROM_BIN}} test -w echo --bin {{TARGET_DIR}}/echo --node-count 1 --time-limit 10
 
 test-id: (build "unique-id")
-    {{MAELSTROM_BIN}} test -w unique-ids --bin {{TARGET_DIR}}/unique-id --time-limit 30 --rate 1000 \
-        --node-count 3 --availability total --nemesis partition
+    {{MAELSTROM_BIN}} test -w unique-ids --bin {{TARGET_DIR}}/unique-id --time-limit 30 \
+        --rate 1000 --node-count 3 --availability total --nemesis partition
 
 test-br: (build "broadcast")
-    {{MAELSTROM_BIN}} test -w broadcast --bin {{TARGET_DIR}}/broadcast --node-count 5 --time-limit 20 \
-        --rate 10 \
-        --nemesis partition
+    {{MAELSTROM_BIN}} test -w broadcast --bin {{TARGET_DIR}}/broadcast --node-count 5 \
+        --time-limit 20 --rate 10 --nemesis partition
 
+test-g: (build "g-counter")
+    {{MAELSTROM_BIN}} test -w g-counter --bin {{TARGET_DIR}}/g-counter --node-count 3 \
+        --time-limit 20 --rate 100 \
+        --nemesis partition
 
 serve:
     {{MAELSTROM_BIN}} serve

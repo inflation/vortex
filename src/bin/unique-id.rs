@@ -2,6 +2,7 @@ use std::sync::{atomic::Ordering, Arc};
 
 use anyhow::bail;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use vortex::{message::Message, node::Node};
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -21,8 +22,8 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn handle_msg(msg: Message<Payload>, node: Arc<Node<Payload>>) -> anyhow::Result<()> {
-    match &msg.body.payload {
+async fn handle_msg(msg: Message<Value>, node: Arc<Node>) -> anyhow::Result<()> {
+    match Payload::deserialize(&msg.body.payload)? {
         Payload::Generate => {
             let id = format!("{}-{}", node.id, node.msg_id.load(Ordering::Relaxed));
             node.reply(&msg, Payload::GenerateOk { id }).await?;

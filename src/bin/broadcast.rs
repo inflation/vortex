@@ -1,6 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use tinyset::SetU32;
 
 use tracing::{debug, info, instrument, Level};
@@ -41,8 +42,8 @@ async fn main() -> anyhow::Result<()> {
 }
 
 #[instrument(skip(node))]
-async fn handle_msg(msg: Message<Payload>, node: Arc<Node<Payload>>) -> anyhow::Result<()> {
-    match msg.body.payload {
+async fn handle_msg(msg: Message<Value>, node: Arc<Node>) -> anyhow::Result<()> {
+    match Payload::deserialize(&msg.body.payload)? {
         Payload::Broadcast { message } => {
             debug!("Broadcasting message {:#?}", msg.body);
             node.messages.lock().insert(message);
@@ -61,8 +62,8 @@ async fn handle_msg(msg: Message<Payload>, node: Arc<Node<Payload>>) -> anyhow::
         Payload::BroadcastOk => {
             debug!("Received broadcast ok {:#?}", msg.body);
             let token = format!("{}:{}", msg.src, msg.body.in_reply_to.unwrap());
-            let (_, tx) = node.pending_broadcasts.remove(&token).unwrap();
-            tx.send(()).ok();
+            let (_, tx) = node.pending_reply.remove(&token).unwrap();
+            tx.send(().into()).ok();
         }
         Payload::Read => {
             let messages = node.messages.lock().clone();
