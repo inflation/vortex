@@ -7,6 +7,7 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.70"
+compact_str = { version = "0.7.0", features = ["serde"] }
 dashmap = "5.4.0"
 futures = "0.3.28"
 parking_lot = "0.12.1"

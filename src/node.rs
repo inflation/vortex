@@ -1,12 +1,16 @@
 use std::{
     io::Write,
-    sync::atomic::{AtomicU32, Ordering},
+    sync::{
+        atomic::{AtomicU32, Ordering},
+        Arc,
+    },
     time::Duration,
 };
 
-use anyhow::Context;
+use anyhow::{bail, Context};
+use compact_str::{format_compact, CompactString};
 use dashmap::DashMap;
-use parking_lot::Mutex;
+use parking_lot::RwLock;
 use serde_json::Value;
 use tinyset::SetU32;
 use tokio::{
@@ -21,18 +25,17 @@ use crate::{
 
 #[derive(Debug)]
 pub struct Node {
-    pub id: String,
+    pub id: CompactString,
     pub msg_id: AtomicU32,
-    pub messages: Mutex<SetU32>,
-    pub peers: Mutex<Vec<String>>,
-    pub in_chan: tokio::sync::Mutex<mpsc::Receiver<Message<Value>>>,
+    pub messages: RwLock<SetU32>,
+    pub peers: RwLock<Vec<CompactString>>,
     pub out_chan: mpsc::Sender<Message<Value>>,
     pub handles: [JoinHandle<anyhow::Result<()>>; 2],
-    pub pending_reply: DashMap<String, oneshot::Sender<Value>>,
+    pub pending_reply: DashMap<CompactString, oneshot::Sender<Value>>,
 }
 
 impl Node {
-    pub fn new() -> anyhow::Result<Self> {
+    pub fn new() -> anyhow::Result<(Self, mpsc::Receiver<Message<Value>>)> {
         let mut line = String::new();
         std::io::stdin()
             .read_line(&mut line)
@@ -59,19 +62,26 @@ impl Node {
         let stdin = tokio::task::spawn_blocking(|| stdin(tx_in));
         let stdout = tokio::task::spawn_blocking(|| stdout(rx_out));
 
-        Ok(Self {
-            id: init_msg.body.payload.node_id,
-            msg_id: 1.into(),
-            messages: Mutex::new(SetU32::new()),
-            peers: Mutex::new(vec![]),
-            in_chan: tokio::sync::Mutex::new(rx_in),
-            out_chan: tx_out,
-            handles: [stdin, stdout],
-            pending_reply: DashMap::new(),
-        })
+        Ok((
+            Self {
+                id: init_msg.body.payload.node_id,
+                msg_id: 1.into(),
+                messages: RwLock::new(SetU32::new()),
+                peers: RwLock::new(vec![]),
+                out_chan: tx_out,
+                handles: [stdin, stdout],
+                pending_reply: DashMap::new(),
+            },
+            rx_in,
+        ))
     }
 
-    pub async fn send(&self, peer: String, msg: impl Payload) -> anyhow::Result<u32> {
+    pub fn new_arc() -> anyhow::Result<(Arc<Self>, mpsc::Receiver<Message<Value>>)> {
+        let (node, rx) = Self::new()?;
+        Ok((Arc::new(node), rx))
+    }
+
+    pub async fn send(&self, peer: CompactString, msg: impl Payload) -> anyhow::Result<u32> {
         let id = self.msg_id.load(Ordering::Relaxed);
         self.out_chan
             .send(Message {
@@ -106,7 +116,7 @@ impl Node {
         Ok(())
     }
 
-    pub async fn rpc<P>(&self, peer: String, msg: P) -> anyhow::Result<Value>
+    pub async fn rpc<P>(&self, peer: CompactString, msg: P) -> anyhow::Result<Value>
     where
         P: Payload,
     {
@@ -123,7 +133,7 @@ impl Node {
         self.out_chan.send(msg.clone()).await?;
         self.msg_id.fetch_add(1, Ordering::Relaxed);
 
-        let token = format!("{}:{msg_id}", peer);
+        let token = format_compact!("{peer}:{msg_id}");
         let (tx, mut rx) = oneshot::channel();
         self.pending_reply.insert(token.clone(), tx);
 
@@ -140,13 +150,16 @@ impl Node {
         }
     }
 
-    pub fn ack(&self, msg: Message<Value>, val: Option<Value>) {
-        let token = format!("seq-kv:{}", msg.body.in_reply_to.unwrap());
-        let (_, tx) = self.pending_reply.remove(&token).unwrap();
-        if let Some(val) = val {
-            tx.send(val).unwrap();
-        } else {
-            tx.send(().into()).unwrap();
+    pub fn ack(&self, msg: Message<Value>, val: Option<Value>) -> anyhow::Result<()> {
+        if let Some(reply) = msg.body.in_reply_to {
+            let token = format_compact!("seq-kv:{reply}");
+            if let Some((_, tx)) = self.pending_reply.remove(&token) {
+                if tx.send(val.unwrap_or_default()).is_ok() {
+                    return Ok(());
+                }
+            }
         }
+
+        bail!("Invalid message");
     }
 }

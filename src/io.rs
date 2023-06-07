@@ -10,11 +10,11 @@ use crate::message::Message;
 pub fn stdin(tx: mpsc::Sender<Message<Value>>) -> anyhow::Result<()> {
     for line in std::io::stdin().lock().lines() {
         let line = line.context("Failed to read message")?;
-        debug!("Received message: {line}");
+        debug!(line, "Received message");
         if let Ok(msg) = serde_json::from_str(&line) {
             tx.blocking_send(msg)?;
         } else {
-            error!("Failed to parse message: {line}");
+            error!(line, "Failed to parse message");
         };
     }
 

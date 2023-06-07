@@ -14,8 +14,8 @@ enum Payload {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
-    let node = Arc::new(Node::new()?);
-    while let Some(msg) = node.in_chan.lock().await.recv().await {
+    let (node, mut rx) = Node::new_arc()?;
+    while let Some(msg) = rx.recv().await {
         tokio::spawn(handle_msg(msg, node.clone()));
     }
 

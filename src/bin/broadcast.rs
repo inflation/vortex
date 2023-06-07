@@ -1,5 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
+use anyhow::bail;
+use compact_str::{format_compact, CompactString};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tinyset::SetU32;
@@ -19,7 +21,7 @@ pub enum Payload {
         messages: SetU32,
     },
     Topology {
-        topology: HashMap<String, Vec<String>>,
+        topology: HashMap<CompactString, Vec<CompactString>>,
     },
     TopologyOk,
 }
@@ -31,10 +33,10 @@ async fn main() -> anyhow::Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
-    let node = Arc::new(Node::new()?);
+    let (node, mut rx) = Node::new_arc()?;
     info!("Starting node...");
 
-    while let Some(msg) = node.in_chan.lock().await.recv().await {
+    while let Some(msg) = rx.recv().await {
         tokio::spawn(handle_msg(msg, node.clone()));
     }
 
@@ -45,11 +47,11 @@ async fn main() -> anyhow::Result<()> {
 async fn handle_msg(msg: Message<Value>, node: Arc<Node>) -> anyhow::Result<()> {
     match Payload::deserialize(&msg.body.payload)? {
         Payload::Broadcast { message } => {
-            debug!("Broadcasting message {:#?}", msg.body);
-            node.messages.lock().insert(message);
+            debug!(body = ?msg.body, "Broadcasting message");
+            node.messages.write().insert(message);
             node.reply(&msg, Payload::BroadcastOk).await?;
 
-            let peers = node.peers.lock().clone();
+            let peers = node.peers.read().clone();
             for peer in peers.iter() {
                 if peer == &msg.src {
                     continue;
@@ -60,20 +62,27 @@ async fn handle_msg(msg: Message<Value>, node: Arc<Node>) -> anyhow::Result<()> 
             }
         }
         Payload::BroadcastOk => {
-            debug!("Received broadcast ok {:#?}", msg.body);
-            let token = format!("{}:{}", msg.src, msg.body.in_reply_to.unwrap());
-            let (_, tx) = node.pending_reply.remove(&token).unwrap();
-            tx.send(().into()).ok();
+            debug!(body = ?msg.body, "Received broadcast_ok");
+            if let Some(reply) = msg.body.in_reply_to {
+                let token = format_compact!("{}:{reply}", msg.src);
+                if let Some((_, tx)) = node.pending_reply.remove(&token) {
+                    if tx.send(().into()).is_ok() {
+                        return Ok(());
+                    }
+                }
+            }
+
+            bail!("Invalid broadcast_ok");
         }
         Payload::Read => {
-            let messages = node.messages.lock().clone();
+            let messages = node.messages.read().clone();
             node.reply(&msg, Payload::ReadOk { messages }).await?;
         }
         Payload::ReadOk { messages: _ } => {}
         Payload::Topology { ref topology } => {
-            debug!("Received topology {topology:#?}");
+            debug!(?topology, "Received topology");
             if let Some(peers) = topology.get(&node.id) {
-                *node.peers.lock() = peers.clone();
+                *node.peers.write() = peers.clone();
             }
             node.reply(&msg, Payload::TopologyOk).await?;
         }

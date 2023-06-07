@@ -1,10 +1,14 @@
 use std::sync::Arc;
 
-use anyhow::bail;
+use anyhow::{bail, Context};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::Level;
-use vortex::{message::Message, node::Node, service::SeqKv};
+use vortex::{
+    message::Message,
+    node::Node,
+    service::{handle_seqkv, SeqKv},
+};
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -22,9 +26,9 @@ async fn main() -> anyhow::Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
-    let node = Arc::new(Node::new()?);
+    let (node, mut rx) = Node::new_arc()?;
 
-    while let Some(msg) = node.in_chan.lock().await.recv().await {
+    while let Some(msg) = rx.recv().await {
         tokio::spawn(handle_msg(msg, node.clone()));
     }
 
@@ -33,34 +37,16 @@ async fn main() -> anyhow::Result<()> {
 
 async fn handle_msg(msg: Message<Value>, node: Arc<Node>) -> anyhow::Result<()> {
     match msg.src.as_str() {
-        "seq-kv" => match SeqKv::deserialize(&msg.body.payload)? {
-            SeqKv::ReadOk { value } => {
-                node.ack(msg, Some(value));
-            }
-            SeqKv::WriteOk => {
-                node.ack(msg, None);
-            }
-            SeqKv::CasOk => {
-                node.ack(msg, None);
-            }
-            SeqKv::Error { code, text } => {
-                if code == 20 {
-                    node.ack(msg, Some(().into()));
-                } else {
-                    bail!("Error {code} from seq-kv: {text}");
-                }
-            }
-            _ => bail!("Unexpected message from seq-kv"),
-        },
+        "seq-kv" => handle_seqkv(msg, node.as_ref()).await?,
         _ => match Payload::deserialize(&msg.body.payload)? {
             Payload::Add { delta } => {
                 let val = node
                     .rpc("seq-kv".into(), SeqKv::Read { key: "val".into() })
                     .await?
                     .as_u64()
-                    .unwrap();
+                    .context("Invalid number")?;
                 node.rpc(
-                    String::from("seq-kv"),
+                    "seq-kv".into(),
                     SeqKv::Cas {
                         key: "val".into(),
                         from: val.into(),
@@ -87,7 +73,7 @@ async fn handle_msg(msg: Message<Value>, node: Arc<Node>) -> anyhow::Result<()> 
                         .await?;
                         0
                     }
-                    Value::Number(n) => n.as_u64().unwrap(),
+                    Value::Number(n) => n.as_u64().context("Invalid number")?,
                     _ => bail!("Unexpected value from seq-kv: {:?}", reply),
                 };
 

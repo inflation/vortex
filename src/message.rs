@@ -1,5 +1,6 @@
 use std::fmt::Debug;
 
+use compact_str::CompactString;
 use serde::{Deserialize, Serialize};
 
 pub trait Payload:
@@ -13,9 +14,9 @@ impl<P> Payload for P where
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Message<P> {
-    pub src: String,
+    pub src: CompactString,
     #[serde(rename = "dest")]
-    pub dst: String,
+    pub dst: CompactString,
     pub body: Body<P>,
 }
 
@@ -30,7 +31,7 @@ pub struct Body<P> {
 #[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(tag = "type", rename = "init")]
 pub struct Init {
-    pub node_id: String,
+    pub node_id: CompactString,
     pub node_ids: Vec<String>,
 }
 
