@@ -19,6 +19,7 @@ use tokio::{
 };
 
 use crate::{
+    error::RpcError,
     io::{stdin, stdout},
     message::{Body, Init, InitOk, Message, Payload},
 };
@@ -31,7 +32,7 @@ pub struct Node {
     pub peers: RwLock<Vec<CompactString>>,
     pub out_chan: mpsc::Sender<Message<Value>>,
     pub handles: [JoinHandle<anyhow::Result<()>>; 2],
-    pub pending_reply: DashMap<CompactString, oneshot::Sender<Value>>,
+    pub pending_reply: DashMap<CompactString, oneshot::Sender<Result<Value, RpcError>>>,
 }
 
 impl Node {
@@ -116,7 +117,11 @@ impl Node {
         Ok(())
     }
 
-    pub async fn rpc<P>(&self, peer: CompactString, msg: P) -> anyhow::Result<Value>
+    pub async fn rpc<P>(
+        &self,
+        peer: CompactString,
+        msg: P,
+    ) -> anyhow::Result<Result<Value, RpcError>>
     where
         P: Payload,
     {
@@ -150,11 +155,11 @@ impl Node {
         }
     }
 
-    pub fn ack(&self, msg: Message<Value>, val: Option<Value>) -> anyhow::Result<()> {
+    pub fn ack(&self, msg: Message<Value>, val: Result<Value, RpcError>) -> anyhow::Result<()> {
         if let Some(reply) = msg.body.in_reply_to {
             let token = format_compact!("seq-kv:{reply}");
             if let Some((_, tx)) = self.pending_reply.remove(&token) {
-                if tx.send(val.unwrap_or_default()).is_ok() {
+                if tx.send(val).is_ok() {
                     return Ok(());
                 }
             }

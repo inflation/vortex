@@ -3,7 +3,7 @@ use std::{collections::HashMap, sync::Arc};
 use anyhow::bail;
 use compact_str::{format_compact, CompactString};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use tinyset::SetU32;
 
 use tracing::{debug, info, instrument, Level};
@@ -57,7 +57,8 @@ async fn handle_msg(msg: Message<Value>, node: Arc<Node>) -> anyhow::Result<()> 
                     continue;
                 }
 
-                node.rpc(peer.clone(), Payload::Broadcast { message })
+                _ = node
+                    .rpc(peer.clone(), Payload::Broadcast { message })
                     .await?;
             }
         }
@@ -66,7 +67,7 @@ async fn handle_msg(msg: Message<Value>, node: Arc<Node>) -> anyhow::Result<()> 
             if let Some(reply) = msg.body.in_reply_to {
                 let token = format_compact!("{}:{reply}", msg.src);
                 if let Some((_, tx)) = node.pending_reply.remove(&token) {
-                    if tx.send(().into()).is_ok() {
+                    if tx.send(Ok(json!(null))).is_ok() {
                         return Ok(());
                     }
                 }

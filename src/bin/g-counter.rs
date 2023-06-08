@@ -3,8 +3,9 @@ use std::sync::Arc;
 use anyhow::{bail, Context};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tracing::Level;
+use tracing::{error, Level};
 use vortex::{
+    error::RpcError,
     message::Message,
     node::Node,
     service::{handle_seqkv, SeqKv},
@@ -29,7 +30,12 @@ async fn main() -> anyhow::Result<()> {
     let (node, mut rx) = Node::new_arc()?;
 
     while let Some(msg) = rx.recv().await {
-        tokio::spawn(handle_msg(msg, node.clone()));
+        let node = node.clone();
+        tokio::spawn(async move {
+            if let Err(e) = handle_msg(msg, node).await {
+                error!("{e:?}");
+            }
+        });
     }
 
     Ok(())
@@ -43,38 +49,30 @@ async fn handle_msg(msg: Message<Value>, node: Arc<Node>) -> anyhow::Result<()> 
                 let val = node
                     .rpc("seq-kv".into(), SeqKv::Read { key: "val".into() })
                     .await?
-                    .as_u64()
-                    .context("Invalid number")?;
-                node.rpc(
-                    "seq-kv".into(),
-                    SeqKv::Cas {
-                        key: "val".into(),
-                        from: val.into(),
-                        to: (val + delta).into(),
-                    },
-                )
-                .await?;
+                    .map(|v| v.as_u64().context("Invalid number"))
+                    .unwrap_or(Ok(0))?;
+                _ = node
+                    .rpc(
+                        "seq-kv".into(),
+                        SeqKv::Cas {
+                            key: "val".into(),
+                            from: val.into(),
+                            to: (val + delta).into(),
+                            create_if_not_exists: Some(true),
+                        },
+                    )
+                    .await?;
                 node.reply(&msg, Payload::AddOk).await?;
             }
             Payload::AddOk => {}
             Payload::Read => {
-                let reply = node
+                let value = match node
                     .rpc("seq-kv".into(), SeqKv::Read { key: "val".into() })
-                    .await?;
-                let value = match reply {
-                    Value::Null => {
-                        node.rpc(
-                            "seq-kv".into(),
-                            SeqKv::Write {
-                                key: "val".into(),
-                                value: 0.into(),
-                            },
-                        )
-                        .await?;
-                        0
-                    }
-                    Value::Number(n) => n.as_u64().context("Invalid number")?,
-                    _ => bail!("Unexpected value from seq-kv: {:?}", reply),
+                    .await?
+                {
+                    Ok(v) => v.as_u64().context("Invalid number")?,
+                    Err(RpcError::KeyNotFound) => 0,
+                    reply @ Err(_) => bail!("Unexpected reply from seq-kv: {reply:?}"),
                 };
 
                 node.reply(&msg, Payload::ReadOk { value }).await?
