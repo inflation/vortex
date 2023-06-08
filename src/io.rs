@@ -1,16 +1,14 @@
 use std::io::{BufRead, Write};
 
-use anyhow::Context;
 use serde_json::Value;
 use tokio::sync::mpsc;
-use tracing::{debug, error};
+use tracing::error;
 
-use crate::message::Message;
+use crate::{error::ExternalError, message::Message};
 
-pub fn stdin(tx: mpsc::Sender<Message<Value>>) -> anyhow::Result<()> {
+pub fn stdin(tx: mpsc::Sender<Message<Value>>) -> Result<(), ExternalError> {
     for line in std::io::stdin().lock().lines() {
-        let line = line.context("Failed to read message")?;
-        debug!(line, "Received message");
+        let line = line?;
         if let Ok(msg) = serde_json::from_str(&line) {
             tx.blocking_send(msg)?;
         } else {
@@ -21,7 +19,7 @@ pub fn stdin(tx: mpsc::Sender<Message<Value>>) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn stdout(mut rx: mpsc::Receiver<Message<Value>>) -> anyhow::Result<()> {
+pub fn stdout(mut rx: mpsc::Receiver<Message<Value>>) -> Result<(), ExternalError> {
     let mut output = std::io::stdout().lock();
 
     while let Some(msg) = rx.blocking_recv() {

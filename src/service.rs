@@ -1,8 +1,12 @@
-use anyhow::bail;
+use compact_str::format_compact;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::{error::RpcError, message::Message, node::Node};
+use crate::{
+    error::{FromSerde, NodeError, RpcError},
+    message::Message,
+    node::Node,
+};
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -31,23 +35,18 @@ pub enum SeqKv {
     },
 }
 
-pub async fn handle_seqkv(msg: Message<Value>, node: &Node) -> anyhow::Result<()> {
-    match SeqKv::deserialize(&msg.body.payload)? {
-        SeqKv::ReadOk { value } => {
-            node.ack(msg, Ok(value))?;
-        }
-        SeqKv::WriteOk => {
-            node.ack(msg, Ok(json!(null)))?;
-        }
-        SeqKv::CasOk => {
-            node.ack(msg, Ok(json!(null)))?;
-        }
+pub async fn handle_seqkv(msg: Message<Value>, node: &Node) -> Result<(), NodeError> {
+    match SeqKv::deserialize(&msg.body.payload).map_ser_error(&msg.body.payload)? {
+        SeqKv::ReadOk { value } => node.ack(msg, Ok(value)),
+        SeqKv::WriteOk => node.ack(msg, Ok(json!(null))),
+        SeqKv::CasOk => node.ack(msg, Ok(json!(null))),
         SeqKv::Error { code, text } => match code {
-            20 => node.ack(msg, Err(RpcError::KeyNotFound))?,
-            _ => bail!("Error {code} from seq-kv: {text}"),
+            20 => node.ack(msg, Err(RpcError::KeyNotFound)),
+            22 => node.ack(msg, Err(RpcError::CasFailed)),
+            _ => Err(NodeError::new(format_compact!(
+                "Error {code} from seq-kv: {text}"
+            ))),
         },
-        _ => bail!("Unexpected message from seq-kv"),
+        _ => Err(NodeError::new("Unexpected message from seq-kv")),
     }
-
-    Ok(())
 }

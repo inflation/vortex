@@ -1,13 +1,18 @@
 use std::{collections::HashMap, sync::Arc};
 
-use anyhow::bail;
 use compact_str::{format_compact, CompactString};
+use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tinyset::SetU32;
 
-use tracing::{debug, info, instrument, Level};
-use vortex::{message::Message, node::Node};
+use tracing::{debug, instrument};
+use vortex::{
+    error::{FromSerde, NodeError},
+    init_tracing,
+    message::Message,
+    node::Node,
+};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -27,28 +32,47 @@ pub enum Payload {
 }
 
 #[tokio::main(flavor = "current_thread")]
-async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_max_level(Level::DEBUG)
-        .with_writer(std::io::stderr)
-        .init();
+async fn main() -> miette::Result<()> {
+    init_tracing();
+
+    let messages = Arc::new(RwLock::new(SetU32::new()));
 
     let (node, mut rx) = Node::new_arc()?;
-    info!("Starting node...");
-
-    while let Some(msg) = rx.recv().await {
-        tokio::spawn(handle_msg(msg, node.clone()));
+    let (c_tx, mut c_rx) = tokio::sync::mpsc::channel(1);
+    loop {
+        tokio::select! {
+            msg = rx.recv() => match msg {
+                Some(msg) => {
+                    let messages = messages.clone();
+                    let node = node.clone();
+                    let c_tx = c_tx.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = handle_msg(msg, node, messages).await {
+                            _ = c_tx.send(e).await;
+                        }
+                    });
+                },
+                None => break
+            },
+            err = c_rx.recv() => if let Some(err) = err {
+                return Err(err)?;
+            }
+        }
     }
 
     Ok(())
 }
 
 #[instrument(skip(node))]
-async fn handle_msg(msg: Message<Value>, node: Arc<Node>) -> anyhow::Result<()> {
-    match Payload::deserialize(&msg.body.payload)? {
+async fn handle_msg(
+    msg: Message<Value>,
+    node: Arc<Node>,
+    messages: Arc<RwLock<SetU32>>,
+) -> Result<(), NodeError> {
+    match Payload::deserialize(&msg.body.payload).map_ser_error(&msg.body.payload)? {
         Payload::Broadcast { message } => {
             debug!(body = ?msg.body, "Broadcasting message");
-            node.messages.write().insert(message);
+            messages.write().insert(message);
             node.reply(&msg, Payload::BroadcastOk).await?;
 
             let peers = node.peers.read().clone();
@@ -73,10 +97,10 @@ async fn handle_msg(msg: Message<Value>, node: Arc<Node>) -> anyhow::Result<()> 
                 }
             }
 
-            bail!("Invalid broadcast_ok");
+            return Err(NodeError::new("Invalid broadcast_ok"));
         }
         Payload::Read => {
-            let messages = node.messages.read().clone();
+            let messages = messages.read().clone();
             node.reply(&msg, Payload::ReadOk { messages }).await?;
         }
         Payload::ReadOk { messages: _ } => {}
