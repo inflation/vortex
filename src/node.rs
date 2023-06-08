@@ -15,6 +15,7 @@ use tokio::{
     sync::{mpsc, oneshot},
     task::JoinHandle,
 };
+use tracing::{debug, error};
 
 use crate::{
     error::{ExternalError, FromSerde, NodeError, RpcError, WithReason},
@@ -155,23 +156,39 @@ impl Node {
                         .with_reason("Failed to send retry RPC message")?;
                 }
                 res = &mut rx => {
-                    self.pending_reply.remove(&token);
-                    return res.with_reason("Failed to get pending reply");
+                    match res {
+                        Ok(res) => {
+                            self.pending_reply.remove(&token);
+                            return Ok(res);
+                        },
+                        Err(_) => {
+                            error!("Failed to receive RPC reply");
+                            return Err(NodeError::new("Failed to receive RPC reply"))
+                        },
+                    }
                 }
             )
         }
     }
 
     pub fn ack(&self, msg: Message<Value>, val: Result<Value, RpcError>) -> Result<(), NodeError> {
-        if let Some(reply) = msg.body.in_reply_to {
-            let token = format_compact!("seq-kv:{reply}");
-            if let Some((_, tx)) = self.pending_reply.remove(&token) {
-                if tx.send(val).is_ok() {
-                    return Ok(());
+        match msg.body.in_reply_to {
+            Some(reply) => {
+                let token = format_compact!("{}:{reply}", msg.src);
+                match self.pending_reply.remove(&token) {
+                    Some((_, tx)) => tx
+                        .send(val)
+                        .map_err(|_| NodeError::new("Failed to send ack")),
+                    None => {
+                        debug!("No pending reply: {token}, maybe already acked");
+                        Ok(())
+                    }
                 }
             }
+            None => {
+                error!("Invalid Ok message");
+                Err(NodeError::new("Invalid Ok message"))
+            }
         }
-
-        Err(NodeError::new("Failed to ack message"))
     }
 }

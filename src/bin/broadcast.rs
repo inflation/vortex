@@ -1,6 +1,6 @@
 use std::{collections::HashMap, sync::Arc};
 
-use compact_str::{format_compact, CompactString};
+use compact_str::CompactString;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -71,33 +71,25 @@ async fn handle_msg(
 ) -> Result<(), NodeError> {
     match Payload::deserialize(&msg.body.payload).map_ser_error(&msg.body.payload)? {
         Payload::Broadcast { message } => {
-            debug!(body = ?msg.body, "Broadcasting message");
-            messages.write().insert(message);
+            debug!("Broadcasting message");
             node.reply(&msg, Payload::BroadcastOk).await?;
 
-            let peers = node.peers.read().clone();
-            for peer in peers.iter() {
-                if peer == &msg.src {
-                    continue;
-                }
+            if !messages.read().contains(message) {
+                messages.write().insert(message);
 
-                _ = node
-                    .rpc(peer.clone(), Payload::Broadcast { message })
-                    .await?;
+                let peers = node.peers.read().clone();
+                for peer in peers {
+                    if peer == msg.src {
+                        continue;
+                    }
+
+                    _ = node.rpc(peer, Payload::Broadcast { message }).await?;
+                }
             }
         }
         Payload::BroadcastOk => {
-            debug!(body = ?msg.body, "Received broadcast_ok");
-            if let Some(reply) = msg.body.in_reply_to {
-                let token = format_compact!("{}:{reply}", msg.src);
-                if let Some((_, tx)) = node.pending_reply.remove(&token) {
-                    if tx.send(Ok(json!(null))).is_ok() {
-                        return Ok(());
-                    }
-                }
-            }
-
-            return Err(NodeError::new("Invalid broadcast_ok"));
+            debug!("Received broadcast_ok");
+            node.ack(msg, Ok(json!(null)))?;
         }
         Payload::Read => {
             let messages = messages.read().clone();
