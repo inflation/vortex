@@ -2,6 +2,7 @@ use std::fmt::Debug;
 
 use compact_str::{format_compact, CompactString};
 use miette::Diagnostic;
+use serde_json::Value;
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot};
 
@@ -71,14 +72,41 @@ where
     }
 }
 
-pub trait FromSerde<T> {
-    fn map_ser_error(self, val: impl Debug) -> Result<T, NodeError>;
+pub trait JsonDeError<T> {
+    fn de(src: &Value) -> Result<T, NodeError>;
 }
 
-impl<T> FromSerde<T> for Result<T, serde_json::Error> {
-    fn map_ser_error(self, val: impl Debug) -> Result<T, NodeError> {
-        self.map_err(|e| NodeError {
-            reason: format_compact!("Failed to serialize: {val:#?}"),
+impl<T> JsonDeError<T> for T
+where
+    T: serde::de::DeserializeOwned,
+{
+    fn de(src: &Value) -> Result<T, NodeError> {
+        T::deserialize(src).map_err(|e| NodeError {
+            reason: format_compact!("Failed to deserialize: {src:#?}"),
+            source: Some(e.into()),
+        })
+    }
+}
+
+pub trait JsonSerError<T> {
+    fn ser_val(&self) -> Result<Value, NodeError>;
+    fn ser_str(&self) -> Result<String, NodeError>;
+}
+
+impl<T> JsonSerError<T> for T
+where
+    T: serde::Serialize + Debug,
+{
+    fn ser_val(&self) -> Result<Value, NodeError> {
+        serde_json::to_value(self).map_err(|e| NodeError {
+            reason: format_compact!("Failed to serialize: {self:#?}"),
+            source: Some(e.into()),
+        })
+    }
+
+    fn ser_str(&self) -> Result<String, NodeError> {
+        serde_json::to_string(self).map_err(|e| NodeError {
+            reason: format_compact!("Failed to serialize: {self:#?}"),
             source: Some(e.into()),
         })
     }

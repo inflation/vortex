@@ -1,10 +1,9 @@
 use std::sync::{atomic::Ordering, Arc};
 
-use compact_str::format_compact;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use vortex::{
-    error::{FromSerde, NodeError},
+    error::{JsonDeError, NodeError},
     init_tracing,
     message::Message,
     node::Node,
@@ -12,8 +11,13 @@ use vortex::{
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
-enum Payload {
+enum Request {
     Generate,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum Response {
     GenerateOk { id: String },
 }
 
@@ -47,12 +51,11 @@ async fn main() -> miette::Result<()> {
 }
 
 async fn handle_msg(msg: Message<Value>, node: Arc<Node>) -> Result<(), NodeError> {
-    match Payload::deserialize(&msg.body.payload).map_ser_error(&msg.body.payload)? {
-        Payload::Generate => {
+    match Request::de(&msg.body.payload)? {
+        Request::Generate => {
             let id = format!("{}-{}", node.id, node.msg_id.load(Ordering::Relaxed));
-            node.reply(&msg, Payload::GenerateOk { id }).await?;
+            node.reply(&msg, Response::GenerateOk { id }).await?;
         }
-        _ => return Err(NodeError::new(format_compact!("Unexpected msg: {msg:?}"))),
     }
 
     Ok(())

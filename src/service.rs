@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::{
-    error::{FromSerde, NodeError, RpcError},
+    error::{JsonDeError, NodeError, RpcError},
     message::Message,
     node::Node,
 };
@@ -36,7 +36,7 @@ pub enum SeqKv {
 }
 
 pub async fn handle_seqkv(msg: Message<Value>, node: &Node) -> Result<(), NodeError> {
-    match SeqKv::deserialize(&msg.body.payload).map_ser_error(&msg.body.payload)? {
+    match SeqKv::de(&msg.body.payload)? {
         SeqKv::ReadOk { value } => node.ack(msg, Ok(value)),
         SeqKv::WriteOk => node.ack(msg, Ok(json!(null))),
         SeqKv::CasOk => node.ack(msg, Ok(json!(null))),

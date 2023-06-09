@@ -8,7 +8,7 @@ use tinyset::SetU32;
 
 use tracing::{debug, instrument};
 use vortex::{
-    error::{FromSerde, NodeError},
+    error::{JsonDeError, NodeError},
     init_tracing,
     message::Message,
     node::Node,
@@ -16,18 +16,21 @@ use vortex::{
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum Payload {
+pub enum Request {
     Broadcast {
         message: u32,
     },
     BroadcastOk,
     Read,
-    ReadOk {
-        messages: SetU32,
-    },
     Topology {
         topology: HashMap<CompactString, Vec<CompactString>>,
     },
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Response {
+    ReadOk { messages: SetU32 },
     TopologyOk,
 }
 
@@ -69,10 +72,10 @@ async fn handle_msg(
     node: Arc<Node>,
     messages: Arc<RwLock<SetU32>>,
 ) -> Result<(), NodeError> {
-    match Payload::deserialize(&msg.body.payload).map_ser_error(&msg.body.payload)? {
-        Payload::Broadcast { message } => {
+    match Request::de(&msg.body.payload)? {
+        Request::Broadcast { message } => {
             debug!("Broadcasting message");
-            node.reply(&msg, Payload::BroadcastOk).await?;
+            node.reply(&msg, Request::BroadcastOk).await?;
 
             if !messages.read().contains(message) {
                 messages.write().insert(message);
@@ -83,27 +86,25 @@ async fn handle_msg(
                         continue;
                     }
 
-                    _ = node.rpc(peer, Payload::Broadcast { message }).await?;
+                    _ = node.rpc(peer, Request::Broadcast { message }).await?;
                 }
             }
         }
-        Payload::BroadcastOk => {
+        Request::BroadcastOk => {
             debug!("Received broadcast_ok");
             node.ack(msg, Ok(json!(null)))?;
         }
-        Payload::Read => {
+        Request::Read => {
             let messages = messages.read().clone();
-            node.reply(&msg, Payload::ReadOk { messages }).await?;
+            node.reply(&msg, Response::ReadOk { messages }).await?;
         }
-        Payload::ReadOk { messages: _ } => {}
-        Payload::Topology { ref topology } => {
+        Request::Topology { ref topology } => {
             debug!(?topology, "Received topology");
             if let Some(peers) = topology.get(&node.id) {
                 *node.peers.write() = peers.clone();
             }
-            node.reply(&msg, Payload::TopologyOk).await?;
+            node.reply(&msg, Response::TopologyOk).await?;
         }
-        Payload::TopologyOk => {}
     }
 
     Ok(())

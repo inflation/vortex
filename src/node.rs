@@ -18,7 +18,7 @@ use tokio::{
 use tracing::{debug, error};
 
 use crate::{
-    error::{ExternalError, FromSerde, NodeError, RpcError, WithReason},
+    error::{ExternalError, JsonSerError, NodeError, RpcError, WithReason},
     io::{stdin, stdout},
     message::{Body, Init, InitOk, Message, Payload},
 };
@@ -54,7 +54,7 @@ impl Node {
                 payload: InitOk {},
             },
         };
-        let init_ok = serde_json::to_string(&reply).map_ser_error(&reply)?;
+        let init_ok = reply.ser_str()?;
         writeln!(&mut output, "{init_ok}").with_reason("Failed to write init_ok to stdout")?;
 
         let (tx_in, rx_in) = mpsc::channel(8);
@@ -89,7 +89,7 @@ impl Node {
                 body: Body {
                     msg_id: Some(self.msg_id.fetch_add(1, Ordering::AcqRel)),
                     in_reply_to: None,
-                    payload: serde_json::to_value(&msg).map_ser_error(&msg)?,
+                    payload: msg.ser_val()?,
                 },
             })
             .await
@@ -106,7 +106,7 @@ impl Node {
                 body: Body {
                     msg_id: Some(self.msg_id.fetch_add(1, Ordering::AcqRel)),
                     in_reply_to: from.body.msg_id,
-                    payload: serde_json::to_value(&msg).map_ser_error(&msg)?,
+                    payload: msg.ser_val()?,
                 },
             })
             .await
@@ -133,7 +133,7 @@ impl Node {
             body: Body {
                 msg_id: Some(msg_id),
                 in_reply_to: None,
-                payload: serde_json::to_value(&msg).map_ser_error(&msg)?,
+                payload: msg.ser_val()?,
             },
         };
         self.out_chan
