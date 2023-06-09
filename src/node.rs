@@ -23,6 +23,8 @@ use crate::{
     message::{Body, Init, InitOk, Message, Payload},
 };
 
+const RPC_LATENCY: Duration = Duration::from_millis(300);
+
 #[derive(Debug)]
 pub struct Node {
     pub id: CompactString,
@@ -79,23 +81,21 @@ impl Node {
         Ok((Arc::new(node), rx))
     }
 
-    pub async fn send(&self, peer: CompactString, msg: impl Payload) -> Result<u32, NodeError> {
-        let id = self.msg_id.load(Ordering::Relaxed);
+    pub async fn send(&self, peer: CompactString, msg: impl Payload) -> Result<(), NodeError> {
         self.out_chan
             .send(Message {
                 src: self.id.clone(),
                 dst: peer,
                 body: Body {
-                    msg_id: Some(id),
+                    msg_id: Some(self.msg_id.fetch_add(1, Ordering::AcqRel)),
                     in_reply_to: None,
                     payload: serde_json::to_value(&msg).map_ser_error(&msg)?,
                 },
             })
             .await
             .with_reason("Failed to send message")?;
-        self.msg_id.fetch_add(1, Ordering::Relaxed);
 
-        Ok(id)
+        Ok(())
     }
 
     pub async fn reply<T>(&self, from: &Message<T>, msg: impl Payload) -> Result<(), NodeError> {
@@ -104,7 +104,7 @@ impl Node {
                 src: from.dst.clone(),
                 dst: from.src.clone(),
                 body: Body {
-                    msg_id: Some(self.msg_id.load(Ordering::Relaxed)),
+                    msg_id: Some(self.msg_id.fetch_add(1, Ordering::AcqRel)),
                     in_reply_to: from.body.msg_id,
                     payload: serde_json::to_value(&msg).map_ser_error(&msg)?,
                 },
@@ -114,7 +114,6 @@ impl Node {
                 "Failed to reply to message: {:?}",
                 from.body.msg_id
             ))?;
-        self.msg_id.fetch_add(1, Ordering::Relaxed);
 
         Ok(())
     }
@@ -127,7 +126,7 @@ impl Node {
     where
         P: Payload,
     {
-        let msg_id = self.msg_id.load(Ordering::Relaxed);
+        let msg_id = self.msg_id.fetch_add(1, Ordering::AcqRel);
         let msg = Message {
             src: self.id.clone(),
             dst: peer.clone(),
@@ -141,7 +140,6 @@ impl Node {
             .send(msg.clone())
             .await
             .with_reason("Failed to send initial RPC message")?;
-        self.msg_id.fetch_add(1, Ordering::Relaxed);
 
         let token = format_compact!("{peer}:{msg_id}");
         let (tx, mut rx) = oneshot::channel();
@@ -149,7 +147,7 @@ impl Node {
 
         loop {
             tokio::select!(
-                _ = tokio::time::sleep(Duration::from_secs(1)) => {
+                _ = tokio::time::sleep(RPC_LATENCY) => {
                     self.out_chan
                         .send(msg.clone())
                         .await
@@ -158,7 +156,6 @@ impl Node {
                 res = &mut rx => {
                     match res {
                         Ok(res) => {
-                            self.pending_reply.remove(&token);
                             return Ok(res);
                         },
                         Err(_) => {
@@ -180,7 +177,7 @@ impl Node {
                         .send(val)
                         .map_err(|_| NodeError::new("Failed to send ack")),
                     None => {
-                        debug!("No pending reply: {token}, maybe already acked");
+                        debug!("No pending reply: {token}, maybe already received");
                         Ok(())
                     }
                 }

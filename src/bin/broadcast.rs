@@ -63,7 +63,7 @@ async fn main() -> miette::Result<()> {
     Ok(())
 }
 
-#[instrument(skip(node))]
+#[instrument(skip_all, fields(msg))]
 async fn handle_msg(
     msg: Message<Value>,
     node: Arc<Node>,
