@@ -18,7 +18,7 @@ br: (build "broadcast")
 
 g: (build "g-counter")
     {{MAELSTROM_BIN}} test -w g-counter --bin {{TARGET_DIR}}/g-counter \
-        --node-count 3 --time-limit 20 --rate 100 --nemesis partition
+        --node-count 3 --rate 100 --time-limit 20 --nemesis partition
 
 serve:
     {{MAELSTROM_BIN}} serve

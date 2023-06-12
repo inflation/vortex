@@ -18,7 +18,7 @@ use tokio::{
 use tracing::{debug, error};
 
 use crate::{
-    error::{ExternalError, JsonSerError, NodeError, RpcError, WithReason},
+    error::{JsonSerError, NodeError, NodeErrorKind, RpcError, WithReason},
     io::{stdin, stdout},
     message::{Body, Init, InitOk, Message, Payload},
 };
@@ -28,10 +28,11 @@ const RPC_LATENCY: Duration = Duration::from_millis(300);
 #[derive(Debug)]
 pub struct Node {
     pub id: CompactString,
+    pub node_ids: Vec<CompactString>,
     pub msg_id: AtomicU32,
     pub peers: RwLock<Vec<CompactString>>,
     pub out_chan: mpsc::Sender<Message<Value>>,
-    pub handles: [JoinHandle<Result<(), ExternalError>>; 2],
+    pub handles: [JoinHandle<Result<(), NodeErrorKind>>; 2],
     pub pending_reply: DashMap<CompactString, oneshot::Sender<Result<Value, RpcError>>>,
 }
 
@@ -66,6 +67,7 @@ impl Node {
         Ok((
             Self {
                 id: init_msg.body.payload.node_id,
+                node_ids: init_msg.body.payload.node_ids,
                 msg_id: 1.into(),
                 peers: RwLock::new(vec![]),
                 out_chan: tx_out,

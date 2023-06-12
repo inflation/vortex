@@ -1,4 +1,4 @@
-use std::fmt::Debug;
+use std::{borrow::Borrow, fmt::Debug};
 
 use compact_str::{format_compact, CompactString};
 use miette::Diagnostic;
@@ -6,36 +6,34 @@ use serde_json::Value;
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot};
 
-#[derive(Debug)]
-pub enum RpcError {
-    KeyNotFound,
-    CasFailed,
-}
-
 #[derive(Debug, Error, Diagnostic)]
-pub enum ExternalError {
+pub enum NodeErrorKind {
     #[error("I/O error")]
-    #[diagnostic(code(external::io))]
+    #[diagnostic(code(kind::io))]
     Io(#[from] std::io::Error),
 
     #[error("JSON error")]
-    #[diagnostic(code(external::json))]
+    #[diagnostic(code(kind::json))]
     Json(#[from] serde_json::Error),
 
     #[error("Channel error")]
-    #[diagnostic(code(external::channel))]
+    #[diagnostic(code(kind::channel))]
     Channel,
+
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    Rpc(#[from] RpcError),
 }
 
-impl<T> From<mpsc::error::SendError<T>> for ExternalError {
+impl<T> From<mpsc::error::SendError<T>> for NodeErrorKind {
     fn from(_: mpsc::error::SendError<T>) -> Self {
-        ExternalError::Channel
+        NodeErrorKind::Channel
     }
 }
 
-impl From<oneshot::error::RecvError> for ExternalError {
+impl From<oneshot::error::RecvError> for NodeErrorKind {
     fn from(_: oneshot::error::RecvError) -> Self {
-        ExternalError::Channel
+        NodeErrorKind::Channel
     }
 }
 
@@ -44,7 +42,7 @@ impl From<oneshot::error::RecvError> for ExternalError {
 #[diagnostic(code(node))]
 pub struct NodeError {
     pub reason: CompactString,
-    pub source: Option<ExternalError>,
+    pub source: Option<NodeErrorKind>,
 }
 
 impl NodeError {
@@ -62,7 +60,7 @@ pub trait WithReason<T> {
 
 impl<T, U> WithReason<T> for Result<T, U>
 where
-    U: Into<ExternalError>,
+    U: Into<NodeErrorKind>,
 {
     fn with_reason(self, reason: impl Into<CompactString>) -> Result<T, NodeError> {
         self.map_err(|e| NodeError {
@@ -73,14 +71,15 @@ where
 }
 
 pub trait JsonDeError<T> {
-    fn de(src: &Value) -> Result<T, NodeError>;
+    fn de(src: impl Borrow<Value>) -> Result<T, NodeError>;
 }
 
 impl<T> JsonDeError<T> for T
 where
     T: serde::de::DeserializeOwned,
 {
-    fn de(src: &Value) -> Result<T, NodeError> {
+    fn de(src: impl Borrow<Value>) -> Result<T, NodeError> {
+        let src = src.borrow();
         T::deserialize(src).map_err(|e| NodeError {
             reason: format_compact!("Failed to deserialize: {src:#?}"),
             source: Some(e.into()),
@@ -110,4 +109,15 @@ where
             source: Some(e.into()),
         })
     }
+}
+
+#[derive(Debug, Error, Diagnostic)]
+#[diagnostic(code(rpc))]
+pub enum RpcError {
+    #[error("Key not found")]
+    KeyNotFound(String),
+    #[error("CAS error")]
+    CasFailed(String),
+    #[error("Unknown error, code: {0}")]
+    Unknown(u8, String),
 }

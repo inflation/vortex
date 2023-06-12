@@ -32,7 +32,7 @@ pub struct Body<P> {
 #[serde(tag = "type", rename = "init")]
 pub struct Init {
     pub node_id: CompactString,
-    pub node_ids: Vec<String>,
+    pub node_ids: Vec<CompactString>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]

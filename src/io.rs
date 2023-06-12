@@ -4,9 +4,9 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 use tracing::error;
 
-use crate::{error::ExternalError, message::Message};
+use crate::{error::NodeErrorKind, message::Message};
 
-pub fn stdin(tx: mpsc::Sender<Message<Value>>) -> Result<(), ExternalError> {
+pub fn stdin(tx: mpsc::Sender<Message<Value>>) -> Result<(), NodeErrorKind> {
     for line in std::io::stdin().lock().lines() {
         let line = line?;
         if let Ok(msg) = serde_json::from_str(&line) {
@@ -19,7 +19,7 @@ pub fn stdin(tx: mpsc::Sender<Message<Value>>) -> Result<(), ExternalError> {
     Ok(())
 }
 
-pub fn stdout(mut rx: mpsc::Receiver<Message<Value>>) -> Result<(), ExternalError> {
+pub fn stdout(mut rx: mpsc::Receiver<Message<Value>>) -> Result<(), NodeErrorKind> {
     let mut output = std::io::stdout().lock();
 
     while let Some(msg) = rx.blocking_recv() {

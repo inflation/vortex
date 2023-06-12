@@ -101,22 +101,6 @@ async fn handle_msg(
                 *buf = &batch | &buf;
             }
             node.reply(&msg, Request::BroadcastBatchOk).await?;
-
-            // let peers = node.peers.read().clone();
-            // for peer in peers {
-            //     if peer == msg.src {
-            //         continue;
-            //     }
-
-            //     _ = node
-            //         .rpc(
-            //             peer,
-            //             Request::BroadcastBatch {
-            //                 messages: buf.clone(),
-            //             },
-            //         )
-            //         .await?;
-            // }
         }
         Request::BroadcastBatchOk => {
             debug!("Received broadcast_batch_ok");
