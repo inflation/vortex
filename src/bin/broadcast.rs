@@ -21,6 +21,10 @@ pub enum Request {
         message: u32,
     },
     BroadcastOk,
+    BroadcastBatch {
+        messages: SetU32,
+    },
+    BroadcastBatchOk,
     Read,
     Topology {
         topology: HashMap<CompactString, Vec<CompactString>>,
@@ -39,18 +43,23 @@ async fn main() -> miette::Result<()> {
     init_tracing();
 
     let messages = Arc::new(RwLock::new(SetU32::new()));
+    let buffer = Arc::new(RwLock::new(SetU32::new()));
 
     let (node, mut rx) = Node::new_arc()?;
     let (c_tx, mut c_rx) = tokio::sync::mpsc::channel(1);
+
+    tokio::spawn(handle_batch_sending(buffer.clone(), node.clone()));
+
     loop {
         tokio::select! {
             msg = rx.recv() => match msg {
                 Some(msg) => {
                     let messages = messages.clone();
+                    let buffer = buffer.clone();
                     let node = node.clone();
                     let c_tx = c_tx.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = handle_msg(msg, node, messages).await {
+                        if let Err(e) = handle_msg(msg, node, messages, buffer).await {
                             _ = c_tx.send(e).await;
                         }
                     });
@@ -66,32 +75,51 @@ async fn main() -> miette::Result<()> {
     Ok(())
 }
 
-#[instrument(skip_all, fields(msg))]
+#[instrument(skip_all, fields(?msg))]
 async fn handle_msg(
     msg: Message<Value>,
     node: Arc<Node>,
     messages: Arc<RwLock<SetU32>>,
+    buffer: Arc<RwLock<SetU32>>,
 ) -> Result<(), NodeError> {
     match Request::de(&msg.body.payload)? {
         Request::Broadcast { message } => {
             debug!("Broadcasting message");
             node.reply(&msg, Request::BroadcastOk).await?;
-
-            if !messages.read().contains(message) {
-                messages.write().insert(message);
-
-                let peers = node.peers.read().clone();
-                for peer in peers {
-                    if peer == msg.src {
-                        continue;
-                    }
-
-                    _ = node.rpc(peer, Request::Broadcast { message }).await?;
-                }
-            }
+            buffer.write().insert(message);
         }
         Request::BroadcastOk => {
             debug!("Received broadcast_ok");
+            node.ack(msg, Ok(json!(null)))?;
+        }
+        Request::BroadcastBatch { messages: batch } => {
+            debug!("Received broadcast_batch");
+            {
+                let mut mm = messages.write();
+                *mm = &batch | &mm;
+                let mut buf = buffer.write();
+                *buf = &batch | &buf;
+            }
+            node.reply(&msg, Request::BroadcastBatchOk).await?;
+
+            // let peers = node.peers.read().clone();
+            // for peer in peers {
+            //     if peer == msg.src {
+            //         continue;
+            //     }
+
+            //     _ = node
+            //         .rpc(
+            //             peer,
+            //             Request::BroadcastBatch {
+            //                 messages: buf.clone(),
+            //             },
+            //         )
+            //         .await?;
+            // }
+        }
+        Request::BroadcastBatchOk => {
+            debug!("Received broadcast_batch_ok");
             node.ack(msg, Ok(json!(null)))?;
         }
         Request::Read => {
@@ -108,4 +136,26 @@ async fn handle_msg(
     }
 
     Ok(())
+}
+
+async fn handle_batch_sending(buffer: Arc<RwLock<SetU32>>, node: Arc<Node>) {
+    loop {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        let pending = std::mem::take(&mut *buffer.write());
+        if pending.is_empty() {
+            continue;
+        }
+
+        let peers = node.peers.read().clone();
+        for peer in peers {
+            _ = node
+                .rpc(
+                    peer,
+                    Request::BroadcastBatch {
+                        messages: pending.clone(),
+                    },
+                )
+                .await;
+        }
+    }
 }
