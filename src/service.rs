@@ -56,6 +56,21 @@ impl Node {
             .await
     }
 
+    pub async fn seqkv_write(
+        &self,
+        key: impl Into<Value>,
+        val: impl Into<Value>,
+    ) -> Result<Result<Value, RpcError>, NodeError> {
+        self.rpc(
+            "seq-kv".into(),
+            SeqKvRequest::Write {
+                key: key.into(),
+                value: val.into(),
+            },
+        )
+        .await
+    }
+
     pub async fn seqkv_cas(
         &self,
         key: impl Into<Value>,

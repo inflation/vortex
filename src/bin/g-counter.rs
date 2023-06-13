@@ -1,8 +1,9 @@
 use std::sync::Arc;
 
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tracing::{error, info};
+use tracing::{debug, info, instrument};
 use vortex::{
     error::{JsonDeError, NodeError, RpcError, WithReason},
     init_tracing,
@@ -39,7 +40,7 @@ async fn main() -> miette::Result<()> {
                     let node = node.clone();
                     let c_tx = c_tx.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = handle_msg(msg, node).await {
+                        if let Err(e) = handle_msg(msg, node, ).await {
                             _ = c_tx.send(e).await;
                         }
                     });
@@ -55,38 +56,38 @@ async fn main() -> miette::Result<()> {
     Ok(())
 }
 
+#[instrument(skip(node))]
 async fn handle_msg(msg: Message<Value>, node: Arc<Node>) -> Result<(), NodeError> {
     match msg.src.as_str() {
         "seq-kv" => node.handle_seqkv(msg)?,
         _ => match Request::de(&msg.body.payload)? {
             Request::Add { delta } => {
+                debug!(delta, "Adding to counter");
                 let id = node.id.as_str();
-                let mut val = node
+                let val = node
                     .seqkv_read(id)
                     .await?
                     .ok()
                     .map(u64::de)
                     .unwrap_or(Ok(0))?;
-                while let Err(RpcError::CasFailed(s)) = node.seqkv_cas(id, val, val + delta).await?
-                {
-                    info!("CAS failed, retrying: {s}");
-                    val = node
-                        .seqkv_read(id)
-                        .await?
-                        .with_reason("Failed to read after a failed CAS")
-                        .and_then(u64::de)?;
-                }
+                node.seqkv_write(id, val + delta)
+                    .await?
+                    .with_reason("seq-kv write failed")?;
                 node.reply(&msg, Response::AddOk).await?;
             }
             Request::Read => {
+                debug!("Reading counter");
+                node.seqkv_write(format!("random:{}", rand::thread_rng().gen::<u32>()), 0)
+                    .await?
+                    .with_reason("Failed to write barrier")?;
+
                 let mut value = 0;
                 for id in &node.node_ids {
                     value += match node.seqkv_read(id.as_str()).await? {
                         Ok(v) => u64::de(v)?,
-                        Err(RpcError::KeyNotFound(text)) => {
-                            error!("Key not found: {text}");
-                            node.reply(&msg, Response::Error { code: 20, text }).await?;
-                            return Ok(());
+                        Err(RpcError::KeyNotFound(_)) => {
+                            info!("Key not found: {id}");
+                            0
                         }
                         Err(e) => {
                             return Err(NodeError {

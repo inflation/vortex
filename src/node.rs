@@ -9,7 +9,6 @@ use std::{
 
 use compact_str::{format_compact, CompactString};
 use dashmap::DashMap;
-use parking_lot::RwLock;
 use serde_json::Value;
 use tokio::{
     sync::{mpsc, oneshot},
@@ -30,7 +29,6 @@ pub struct Node {
     pub id: CompactString,
     pub node_ids: Vec<CompactString>,
     pub msg_id: AtomicU32,
-    pub peers: RwLock<Vec<CompactString>>,
     pub out_chan: mpsc::Sender<Message<Value>>,
     pub handles: [JoinHandle<Result<(), NodeErrorKind>>; 2],
     pub pending_reply: DashMap<CompactString, oneshot::Sender<Result<Value, RpcError>>>,
@@ -69,7 +67,6 @@ impl Node {
                 id: init_msg.body.payload.node_id,
                 node_ids: init_msg.body.payload.node_ids,
                 msg_id: 1.into(),
-                peers: RwLock::new(vec![]),
                 out_chan: tx_out,
                 handles: [stdin, stdout],
                 pending_reply: DashMap::new(),
