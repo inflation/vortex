@@ -1,8 +1,8 @@
 MAELSTROM_BIN := "/opt/apps/maelstrom/maelstrom"
-TARGET_DIR := "target/debug"
+TARGET_DIR := "target/release"
 
 build target:
-    cargo build --bin {{target}}
+    cargo build --bin {{target}} --release
 
 echo: (build "echo")
     {{MAELSTROM_BIN}} test -w echo --bin {{TARGET_DIR}}/echo \
@@ -19,6 +19,10 @@ br: (build "broadcast")
 g: (build "g-counter")
     {{MAELSTROM_BIN}} test -w g-counter --bin {{TARGET_DIR}}/g-counter \
         --node-count 3 --rate 100 --time-limit 20 --nemesis partition
+
+k: (build "kafka")
+    {{MAELSTROM_BIN}} test -w kafka --bin {{TARGET_DIR}}/kafka \
+        --node-count 1 --concurrency 2n --time-limit 20 --rate 1000
 
 serve:
     {{MAELSTROM_BIN}} serve

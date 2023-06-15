@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::{debug, info, instrument};
 use vortex::{
-    error::{JsonDeError, NodeError, RpcError, WithReason},
+    error::{JsonDeError, NodeError, WithReason},
     init_tracing,
     message::Message,
     node::Node,
@@ -64,12 +64,7 @@ async fn handle_msg(msg: Message<Value>, node: Arc<Node>) -> Result<(), NodeErro
             Request::Add { delta } => {
                 debug!(delta, "Adding to counter");
                 let id = node.id.as_str();
-                let val = node
-                    .seqkv_read(id)
-                    .await?
-                    .ok()
-                    .map(u64::de)
-                    .unwrap_or(Ok(0))?;
+                let val = node.seqkv_read(id).await?.map(u64::de).unwrap_or(Ok(0))?;
                 node.seqkv_write(id, val + delta)
                     .await?
                     .with_reason("seq-kv write failed")?;
@@ -84,16 +79,10 @@ async fn handle_msg(msg: Message<Value>, node: Arc<Node>) -> Result<(), NodeErro
                 let mut value = 0;
                 for id in &node.node_ids {
                     value += match node.seqkv_read(id.as_str()).await? {
-                        Ok(v) => u64::de(v)?,
-                        Err(RpcError::KeyNotFound(_)) => {
+                        Some(v) => u64::de(v)?,
+                        None => {
                             info!("Key not found: {id}");
                             0
-                        }
-                        Err(e) => {
-                            return Err(NodeError {
-                                reason: "seq-kv read failed".into(),
-                                source: Some(e.into()),
-                            })
                         }
                     };
                 }

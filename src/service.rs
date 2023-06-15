@@ -48,12 +48,15 @@ impl Node {
         }
     }
 
-    pub async fn seqkv_read(
-        &self,
-        key: impl Into<Value>,
-    ) -> Result<Result<Value, RpcError>, NodeError> {
-        self.rpc("seq-kv".into(), SeqKvRequest::Read { key: key.into() })
-            .await
+    pub async fn seqkv_read(&self, key: impl Into<Value>) -> Result<Option<Value>, NodeError> {
+        match self
+            .rpc("seq-kv".into(), SeqKvRequest::Read { key: key.into() })
+            .await?
+        {
+            Ok(v) => Ok(Some(v)),
+            Err(RpcError::KeyNotFound(_)) => Ok(None),
+            Err(e) => Err(NodeError::new_with("Unexpected response from seq-kv", e)),
+        }
     }
 
     pub async fn seqkv_write(

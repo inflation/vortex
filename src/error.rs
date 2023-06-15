@@ -52,6 +52,13 @@ impl NodeError {
             source: None,
         }
     }
+
+    pub fn new_with(reason: impl Into<CompactString>, source: impl Into<NodeErrorKind>) -> Self {
+        Self {
+            reason: reason.into(),
+            source: Some(source.into()),
+        }
+    }
 }
 
 pub trait WithReason<T> {
