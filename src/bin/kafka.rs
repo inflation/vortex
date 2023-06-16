@@ -6,7 +6,6 @@ use std::{
 use compact_str::CompactString;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use serde_tuple::{Deserialize_tuple, Serialize_tuple};
 use tracing::instrument;
 use vortex::{
     error::{JsonDeError, JsonSerError, NodeError, WithReason},
@@ -14,12 +13,6 @@ use vortex::{
     message::Message,
     node::Node,
 };
-
-#[derive(Deserialize_tuple, Serialize_tuple, Debug, Clone)]
-struct Log {
-    offset: u64,
-    message: u64,
-}
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -47,7 +40,7 @@ enum Response {
         offset: u64,
     },
     PollOk {
-        msgs: HashMap<CompactString, Vec<Log>>,
+        msgs: HashMap<CompactString, Vec<(u64, u64)>>,
     },
     CommitOffsetsOk {},
     ListCommittedOffsetsOk {
@@ -116,7 +109,9 @@ async fn handle_send(
     let mut state = kv_state
         .as_ref()
         .map_or_else(|| Ok(State::default()), State::de)?;
+    state.offset += 1;
     state.logs.insert(state.offset, message);
+
     while !node
         .kv_cas("lin-kv", key.as_str(), kv_state, state.ser_val()?)
         .await?
@@ -154,13 +149,7 @@ async fn handle_poll(
 
         if let Some(state) = kv_state {
             let s = State::de(&state)?;
-            msgs.insert(
-                key,
-                s.logs
-                    .range(val..)
-                    .map(|(&offset, &message)| Log { offset, message })
-                    .collect(),
-            );
+            msgs.insert(key, s.logs.range(val..).map(|(&k, &v)| (k, v)).collect());
         }
     }
 
@@ -179,6 +168,7 @@ async fn handle_commit(
         if let Some(mut kv_state) = kv_state {
             let mut state = State::de(&kv_state)?;
             state.committed_offset = val;
+
             while !node
                 .kv_cas("lin-kv", key.as_str(), kv_state, state.ser_val()?)
                 .await?

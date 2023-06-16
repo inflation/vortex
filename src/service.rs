@@ -2,7 +2,7 @@ use std::fmt::Debug;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tracing::{debug, debug_span, instrument};
+use tracing::{debug, instrument};
 
 use crate::{
     error::{JsonDeError, NodeError, RpcError},
@@ -40,26 +40,14 @@ pub enum KvResponse {
 impl Node {
     pub fn handle_kv(&self, msg: Message<Value>) -> Result<(), NodeError> {
         match KvResponse::de(&msg.body.payload)? {
-            KvResponse::ReadOk { value } => {
-                let _span = debug_span!("KV read ok", ?value).entered();
-                self.ack(msg, Ok(value))
-            }
-            KvResponse::WriteOk => {
-                let _span = debug_span!("KV write ok").entered();
-                self.ack(msg, Ok(json!(null)))
-            }
-            KvResponse::CasOk => {
-                let _span = debug_span!("KV cas ok").entered();
-                self.ack(msg, Ok(json!(null)))
-            }
-            KvResponse::Error { code, text } => {
-                let _span = debug_span!("KV error", code, text).entered();
-                match code {
-                    20 => self.ack(msg, Err(RpcError::KeyNotFound)),
-                    22 => self.ack(msg, Err(RpcError::CasFailed(text))),
-                    _ => self.ack(msg, Err(RpcError::Unknown(code, text))),
-                }
-            }
+            KvResponse::ReadOk { value } => self.ack(msg, Ok(value)),
+            KvResponse::WriteOk => self.ack(msg, Ok(json!(null))),
+            KvResponse::CasOk => self.ack(msg, Ok(json!(null))),
+            KvResponse::Error { code, text } => match code {
+                20 => self.ack(msg, Err(RpcError::KeyNotFound)),
+                22 => self.ack(msg, Err(RpcError::CasFailed(text))),
+                _ => self.ack(msg, Err(RpcError::Unknown(code, text))),
+            },
         }
     }
 

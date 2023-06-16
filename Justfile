@@ -21,7 +21,7 @@ g: (build "g-counter")
         --node-count 3 --rate 100 --time-limit 20 --nemesis partition
 
 k: (build "kafka")
-    env RUST_LOG="kafka=debug" OTEL_SERVICE_NAME=kafka \
+    env RUST_LOG="vortex=debug,kafka=debug" OTEL_SERVICE_NAME=kafka \
     {{MAELSTROM_BIN}} test -w kafka --bin {{TARGET_DIR}}/kafka \
         --node-count 2 --concurrency 2n --time-limit 20 --rate 1000
 
