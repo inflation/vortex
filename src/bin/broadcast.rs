@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use compact_str::CompactString;
 use parking_lot::RwLock;
@@ -9,7 +9,7 @@ use tinyset::SetU32;
 use tracing::{debug_span, instrument, Instrument};
 use vortex::{
     error::{JsonDeError, NodeError},
-    init_tracing,
+    init_tracing, main_loop,
     message::Message,
     node::Node,
 };
@@ -38,6 +38,8 @@ pub enum Response {
     TopologyOk,
 }
 
+const BATCH_PERIOD: Duration = Duration::from_millis(500);
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> miette::Result<()> {
     init_tracing()?;
@@ -46,39 +48,13 @@ async fn main() -> miette::Result<()> {
     let messages = Arc::new(RwLock::new(SetU32::new()));
     let buffer = Arc::new(RwLock::new(SetU32::new()));
 
-    let (node, mut rx) = Node::new_arc()?;
-    let (c_tx, mut c_rx) = tokio::sync::mpsc::channel(1);
-
-    tokio::spawn(handle_batch_sending(
-        peers.clone(),
-        buffer.clone(),
-        node.clone(),
-    ));
-
-    loop {
-        tokio::select! {
-            msg = rx.recv() => match msg {
-                Some(msg) => {
-                    let messages = messages.clone();
-                    let buffer = buffer.clone();
-                    let node = node.clone();
-                    let peers = peers.clone();
-                    let c_tx = c_tx.clone();
-                    tokio::spawn(async move {
-                        if let Err(e) = handle_msg(msg, node, peers, messages, buffer).await {
-                            _ = c_tx.send(e).await;
-                        }
-                    });
-                },
-                None => break
-            },
-            err = c_rx.recv() => if let Some(err) = err {
-                return Err(err)?;
-            }
-        }
-    }
-
-    Ok(())
+    let p = peers.clone();
+    let b = buffer.clone();
+    let main = main_loop(move |msg, node| {
+        handle_msg(msg, node, peers.clone(), messages.clone(), buffer.clone())
+    })?;
+    tokio::spawn(handle_batch_sending(p, b, main.node.clone()));
+    main.await
 }
 
 async fn handle_msg(
@@ -100,9 +76,9 @@ async fn handle_msg(
     }
 }
 
-#[instrument("Broadcast", skip(msg))]
+#[instrument("Broadcast", skip_all, fields(message, node))]
 async fn handle_broadcast(
-    buffer: &Arc<parking_lot::lock_api::RwLock<parking_lot::RawRwLock, SetU32>>,
+    buffer: &Arc<RwLock<SetU32>>,
     message: u32,
     node: &Arc<Node>,
     msg: &Message<Value>,
@@ -116,7 +92,7 @@ fn handle_broadcast_ok(node: &Arc<Node>, msg: Message<Value>) -> Result<(), Node
     node.ack(msg, Ok(json!(null)))
 }
 
-#[instrument("Broadcast Batch", skip(msg))]
+#[instrument("Broadcast Batch", skip_all, fields(batch, node))]
 async fn handle_broadcast_batch(
     messages: &Arc<RwLock<SetU32>>,
     batch: &SetU32,
@@ -165,28 +141,28 @@ async fn handle_batch_sending(
     peers: Arc<RwLock<Vec<CompactString>>>,
     buffer: Arc<RwLock<SetU32>>,
     node: Arc<Node>,
-) {
+) -> Result<(), NodeError> {
     loop {
         async {
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            tokio::time::sleep(BATCH_PERIOD).await;
             let pending = std::mem::take(&mut *buffer.write());
-            if pending.is_empty() {
-                return;
+            if !pending.is_empty() {
+                let peers = peers.read().clone();
+                for peer in peers {
+                    _ = node
+                        .rpc(
+                            peer,
+                            Request::BroadcastBatch {
+                                messages: pending.clone(),
+                            },
+                        )
+                        .await?;
+                }
             }
 
-            let peers = peers.read().clone();
-            for peer in peers {
-                _ = node
-                    .rpc(
-                        peer,
-                        Request::BroadcastBatch {
-                            messages: pending.clone(),
-                        },
-                    )
-                    .await;
-            }
+            Ok(())
         }
         .instrument(debug_span!("Sending batch message", id = node.id.as_str()))
-        .await
+        .await?
     }
 }
