@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tinyset::SetU32;
 
-use tracing::{debug, instrument};
+use tracing::{debug_span, instrument, Instrument};
 use vortex::{
     error::{JsonDeError, NodeError},
     init_tracing,
@@ -81,7 +81,6 @@ async fn main() -> miette::Result<()> {
     Ok(())
 }
 
-#[instrument(skip_all, fields(?msg))]
 async fn handle_msg(
     msg: Message<Value>,
     node: Arc<Node>,
@@ -90,43 +89,76 @@ async fn handle_msg(
     buffer: Arc<RwLock<SetU32>>,
 ) -> Result<(), NodeError> {
     match Request::de(&msg.body.payload)? {
-        Request::Broadcast { message } => {
-            debug!("Broadcasting message");
-            node.reply(&msg, Request::BroadcastOk).await?;
-            buffer.write().insert(message);
-        }
-        Request::BroadcastOk => {
-            debug!("Received broadcast_ok");
-            node.ack(msg, Ok(json!(null)))?;
-        }
+        Request::Broadcast { message } => handle_broadcast(&buffer, message, &node, &msg).await,
+        Request::BroadcastOk => handle_broadcast_ok(&node, msg),
         Request::BroadcastBatch { messages: batch } => {
-            debug!("Received broadcast_batch");
-            {
-                let mut mm = messages.write();
-                *mm = &batch | &mm;
-                let mut buf = buffer.write();
-                *buf = &batch | &buf;
-            }
-            node.reply(&msg, Request::BroadcastBatchOk).await?;
+            handle_broadcast_batch(&messages, &batch, buffer, &node, &msg).await
         }
-        Request::BroadcastBatchOk => {
-            debug!("Received broadcast_batch_ok");
-            node.ack(msg, Ok(json!(null)))?;
-        }
-        Request::Read => {
-            let messages = messages.read().clone();
-            node.reply(&msg, Response::ReadOk { messages }).await?;
-        }
-        Request::Topology { ref topology } => {
-            debug!(?topology, "Received topology");
-            if let Some(p) = topology.get(&node.id) {
-                *peers.write() = p.clone();
-            }
-            node.reply(&msg, Response::TopologyOk).await?;
-        }
+        Request::BroadcastBatchOk => handle_broadcast_batch_ok(&node, msg),
+        Request::Read => handle_read(messages, &node, &msg).await,
+        Request::Topology { ref topology } => handle_topology(topology, &node, peers, msg).await,
     }
+}
 
-    Ok(())
+#[instrument("Broadcast", skip(msg))]
+async fn handle_broadcast(
+    buffer: &Arc<parking_lot::lock_api::RwLock<parking_lot::RawRwLock, SetU32>>,
+    message: u32,
+    node: &Arc<Node>,
+    msg: &Message<Value>,
+) -> Result<(), NodeError> {
+    buffer.write().insert(message);
+    node.reply(msg, Request::BroadcastOk).await
+}
+
+#[instrument("Broadcast Ok", skip(msg))]
+fn handle_broadcast_ok(node: &Arc<Node>, msg: Message<Value>) -> Result<(), NodeError> {
+    node.ack(msg, Ok(json!(null)))
+}
+
+#[instrument("Broadcast Batch", skip(msg))]
+async fn handle_broadcast_batch(
+    messages: &Arc<RwLock<SetU32>>,
+    batch: &SetU32,
+    buffer: Arc<RwLock<SetU32>>,
+    node: &Arc<Node>,
+    msg: &Message<Value>,
+) -> Result<(), NodeError> {
+    {
+        let mut mm = messages.write();
+        *mm = batch | &mm;
+        let mut buf = buffer.write();
+        *buf = batch | &buf;
+    }
+    node.reply(msg, Request::BroadcastBatchOk).await
+}
+
+#[instrument("Broadcast Batch Ok", skip(msg))]
+fn handle_broadcast_batch_ok(node: &Arc<Node>, msg: Message<Value>) -> Result<(), NodeError> {
+    node.ack(msg, Ok(json!(null)))
+}
+
+#[instrument("Read", skip(msg))]
+async fn handle_read(
+    messages: Arc<RwLock<SetU32>>,
+    node: &Arc<Node>,
+    msg: &Message<Value>,
+) -> Result<(), NodeError> {
+    let messages = messages.read().clone();
+    node.reply(msg, Response::ReadOk { messages }).await
+}
+
+#[instrument("Topology", skip(msg))]
+async fn handle_topology(
+    topology: &HashMap<CompactString, Vec<CompactString>>,
+    node: &Arc<Node>,
+    peers: Arc<RwLock<Vec<CompactString>>>,
+    msg: Message<Value>,
+) -> Result<(), NodeError> {
+    if let Some(p) = topology.get(&node.id) {
+        *peers.write() = p.clone();
+    }
+    node.reply(&msg, Response::TopologyOk).await
 }
 
 async fn handle_batch_sending(
@@ -135,22 +167,26 @@ async fn handle_batch_sending(
     node: Arc<Node>,
 ) {
     loop {
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        let pending = std::mem::take(&mut *buffer.write());
-        if pending.is_empty() {
-            continue;
-        }
+        async {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            let pending = std::mem::take(&mut *buffer.write());
+            if pending.is_empty() {
+                return;
+            }
 
-        let peers = peers.read().clone();
-        for peer in peers {
-            _ = node
-                .rpc(
-                    peer,
-                    Request::BroadcastBatch {
-                        messages: pending.clone(),
-                    },
-                )
-                .await;
+            let peers = peers.read().clone();
+            for peer in peers {
+                _ = node
+                    .rpc(
+                        peer,
+                        Request::BroadcastBatch {
+                            messages: pending.clone(),
+                        },
+                    )
+                    .await;
+            }
         }
+        .instrument(debug_span!("Sending batch message", id = node.id.as_str()))
+        .await
     }
 }

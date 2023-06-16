@@ -3,7 +3,7 @@ use std::sync::Arc;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tracing::{debug, info, instrument};
+use tracing::{info, instrument};
 use vortex::{
     error::{JsonDeError, NodeError},
     init_tracing,
@@ -56,46 +56,47 @@ async fn main() -> miette::Result<()> {
     Ok(())
 }
 
-#[instrument(skip(node))]
 async fn handle_msg(msg: Message<Value>, node: Arc<Node>) -> Result<(), NodeError> {
     match msg.src.as_str() {
-        "seq-kv" => node.handle_kv(msg)?,
+        "seq-kv" => node.handle_kv(msg),
         _ => match Request::de(&msg.body.payload)? {
-            Request::Add { delta } => {
-                debug!(delta, "Adding to counter");
-                let id = node.id.as_str();
-                let val = node
-                    .kv_read("seq-kv", id)
-                    .await?
-                    .map(u64::de)
-                    .unwrap_or(Ok(0))?;
-                node.kv_write("seq-kv", id, val + delta).await?;
-                node.reply(&msg, Response::AddOk).await?;
-            }
-            Request::Read => {
-                debug!("Reading counter");
-                node.kv_write(
-                    "seq-kv",
-                    format!("barrier:{}", rand::thread_rng().gen::<u32>()),
-                    0,
-                )
-                .await?;
-
-                let mut value = 0;
-                for id in &node.node_ids {
-                    value += match node.kv_read("seq-kv", id.as_str()).await? {
-                        Some(v) => u64::de(v)?,
-                        None => {
-                            info!("Key not found: {id}");
-                            0
-                        }
-                    };
-                }
-
-                node.reply(&msg, Response::ReadOk { value }).await?
-            }
+            Request::Add { delta } => handle_add(delta, &node, &msg).await,
+            Request::Read => handle_read(node, msg).await,
         },
     }
+}
 
-    Ok(())
+#[instrument("Add", skip(msg))]
+async fn handle_add(delta: u64, node: &Arc<Node>, msg: &Message<Value>) -> Result<(), NodeError> {
+    let id = node.id.as_str();
+    let val = node
+        .kv_read("seq-kv", id)
+        .await?
+        .map(u64::de)
+        .unwrap_or(Ok(0))?;
+    node.kv_write("seq-kv", id, val + delta).await?;
+
+    node.reply(msg, Response::AddOk).await
+}
+
+#[instrument("Read", skip(msg))]
+async fn handle_read(node: Arc<Node>, msg: Message<Value>) -> Result<(), NodeError> {
+    node.kv_write(
+        "seq-kv",
+        format!("barrier:{}", rand::thread_rng().gen::<u32>()),
+        0,
+    )
+    .await?;
+
+    let mut value = 0;
+    for id in &node.node_ids {
+        value += match node.kv_read("seq-kv", id.as_str()).await? {
+            Some(v) => u64::de(v)?,
+            None => {
+                info!("Key not found: {id}");
+                0
+            }
+        };
+    }
+    node.reply(&msg, Response::ReadOk { value }).await
 }

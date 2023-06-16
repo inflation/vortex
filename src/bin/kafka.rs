@@ -1,9 +1,11 @@
 use std::{
     collections::{BTreeMap, HashMap},
+    future,
     sync::Arc,
 };
 
 use compact_str::CompactString;
+use futures::{stream::FuturesUnordered, StreamExt, TryStreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::instrument;
@@ -143,15 +145,28 @@ async fn handle_poll(
     node: &Arc<Node>,
     msg: &Message<Value>,
 ) -> Result<(), NodeError> {
-    let mut msgs = HashMap::new();
-    for (key, val) in offsets {
-        let kv_state = node.kv_read("lin-kv", key.as_str()).await?;
-
-        if let Some(state) = kv_state {
-            let s = State::de(&state)?;
-            msgs.insert(key, s.logs.range(val..).map(|(&k, &v)| (k, v)).collect());
-        }
-    }
+    let msgs = offsets
+        .into_iter()
+        .map(|(key, val)| async move {
+            let kv_state = node.kv_read("lin-kv", key.as_str()).await;
+            kv_state.transpose().map(|kv_state| {
+                kv_state.and_then(|v| {
+                    State::de(v).map(|v| {
+                        (
+                            key,
+                            v.logs
+                                .range(val..)
+                                .map(|(&k, &v)| (k, v))
+                                .collect::<Vec<_>>(),
+                        )
+                    })
+                })
+            })
+        })
+        .collect::<FuturesUnordered<_>>()
+        .filter_map(future::ready)
+        .try_collect()
+        .await?;
 
     node.reply(msg, Response::PollOk { msgs }).await
 }

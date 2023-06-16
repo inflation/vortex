@@ -1,3 +1,4 @@
+use core::fmt;
 use std::{
     io::Write,
     sync::{
@@ -21,7 +22,6 @@ use crate::{
 
 const RPC_LATENCY: Duration = Duration::from_millis(300);
 
-#[derive(Debug)]
 pub struct Node {
     pub id: CompactString,
     pub node_ids: Vec<CompactString>,
@@ -181,5 +181,11 @@ impl Node {
                 Err(NodeError::new("Invalid Ok message"))
             }
         }
+    }
+}
+
+impl fmt::Debug for Node {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.id.as_str())
     }
 }

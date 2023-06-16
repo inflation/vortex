@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tracing::instrument;
+use tracing::{debug_span, Instrument};
 use vortex::{
     error::{JsonDeError, NodeError},
     init_tracing,
@@ -51,13 +51,13 @@ async fn main() -> miette::Result<()> {
     Ok(())
 }
 
-#[instrument(skip(node))]
 async fn handle_msg(msg: Message<Value>, node: Arc<Node>) -> Result<(), NodeError> {
     match Request::de(&msg.body.payload)? {
         Request::Echo { echo } => {
-            node.reply(&msg, Response::EchoOk { echo }).await?;
+            let span = debug_span!("Echo", ?echo);
+            node.reply(&msg, Response::EchoOk { echo })
+                .instrument(span)
+                .await
         }
     }
-
-    Ok(())
 }

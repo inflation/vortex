@@ -2,6 +2,7 @@ use std::sync::{atomic::Ordering, Arc};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tracing::{debug_span, Instrument};
 use vortex::{
     error::{JsonDeError, NodeError},
     init_tracing,
@@ -54,9 +55,10 @@ async fn handle_msg(msg: Message<Value>, node: Arc<Node>) -> Result<(), NodeErro
     match Request::de(&msg.body.payload)? {
         Request::Generate => {
             let id = format!("{}-{}", node.id, node.msg_id.load(Ordering::Relaxed));
-            node.reply(&msg, Response::GenerateOk { id }).await?;
+            let span = debug_span!("Generate", id = node.id.as_str());
+            node.reply(&msg, Response::GenerateOk { id })
+                .instrument(span)
+                .await
         }
     }
-
-    Ok(())
 }
