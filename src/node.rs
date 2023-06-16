@@ -10,14 +10,11 @@ use std::{
 use compact_str::{format_compact, CompactString};
 use dashmap::DashMap;
 use serde_json::Value;
-use tokio::{
-    sync::{mpsc, oneshot},
-    task::JoinHandle,
-};
+use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, error};
 
 use crate::{
-    error::{JsonSerError, NodeError, NodeErrorKind, RpcError, WithReason},
+    error::{JsonSerError, NodeError, RpcError, WithReason},
     io::{stdin, stdout},
     message::{Body, Init, InitOk, Message, Payload},
 };
@@ -30,8 +27,7 @@ pub struct Node {
     pub node_ids: Vec<CompactString>,
     pub msg_id: AtomicU32,
     pub out_chan: mpsc::Sender<Message<Value>>,
-    pub handles: [JoinHandle<Result<(), NodeErrorKind>>; 2],
-    pub pending_reply: DashMap<CompactString, oneshot::Sender<Result<Value, RpcError>>>,
+    pending_reply: DashMap<CompactString, oneshot::Sender<Result<Value, RpcError>>>,
 }
 
 impl Node {
@@ -59,8 +55,8 @@ impl Node {
         let (tx_in, rx_in) = mpsc::channel(8);
         let (tx_out, rx_out) = mpsc::channel(8);
 
-        let stdin = tokio::task::spawn_blocking(|| stdin(tx_in));
-        let stdout = tokio::task::spawn_blocking(|| stdout(rx_out));
+        tokio::task::spawn_blocking(|| stdin(tx_in));
+        tokio::task::spawn_blocking(|| stdout(rx_out));
 
         Ok((
             Self {
@@ -68,7 +64,6 @@ impl Node {
                 node_ids: init_msg.body.payload.node_ids,
                 msg_id: 1.into(),
                 out_chan: tx_out,
-                handles: [stdin, stdout],
                 pending_reply: DashMap::new(),
             },
             rx_in,

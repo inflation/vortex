@@ -4,13 +4,12 @@ use std::{
 };
 
 use compact_str::CompactString;
-use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use serde_tuple::{Deserialize_tuple, Serialize_tuple};
-use tracing::{debug, instrument};
+use tracing::instrument;
 use vortex::{
-    error::{JsonDeError, NodeError},
+    error::{JsonDeError, JsonSerError, NodeError, WithReason},
     init_tracing,
     message::Message,
     node::Node,
@@ -56,7 +55,7 @@ enum Response {
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 struct State {
     logs: BTreeMap<u64, u64>,
     offset: u64,
@@ -65,12 +64,10 @@ struct State {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> miette::Result<()> {
-    init_tracing();
+    init_tracing()?;
 
     let (node, mut rx) = Node::new_arc()?;
     let (c_tx, mut c_rx) = tokio::sync::mpsc::channel(1);
-
-    let states = Arc::new(DashMap::new());
 
     loop {
         tokio::select! {
@@ -78,9 +75,8 @@ async fn main() -> miette::Result<()> {
                 Some(msg) => {
                     let node = node.clone();
                     let c_tx = c_tx.clone();
-                    let states = states.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = handle_msg(msg, node, states).await {
+                        if let Err(e) = handle_msg(msg, node, ).await {
                             _ = c_tx.send(e).await;
                         }
                     });
@@ -93,78 +89,132 @@ async fn main() -> miette::Result<()> {
         }
     }
 
+    opentelemetry::global::shutdown_tracer_provider();
     Ok(())
 }
 
-#[instrument(skip(node, states))]
-async fn handle_msg(
-    msg: Message<Value>,
-    node: Arc<Node>,
-    states: Arc<DashMap<CompactString, State>>,
-) -> Result<(), NodeError> {
+async fn handle_msg(msg: Message<Value>, node: Arc<Node>) -> Result<(), NodeError> {
     match msg.src.as_str() {
-        "seq-kv" => node.handle_seqkv(msg)?,
+        "seq-kv" | "lin-kv" => node.handle_kv(msg),
         _ => match Request::de(&msg.body.payload)? {
-            Request::Send { key, msg: message } => {
-                debug!(?key, ?message, "Received log");
-
-                let mut state = states.entry(key).or_insert(State {
-                    logs: BTreeMap::new(),
-                    offset: 1,
-                    committed_offset: 0,
-                });
-
-                let offset = state.offset;
-                debug!(offset, message, "Send log");
-                node.reply(&msg, Response::SendOk { offset }).await?;
-
-                state.logs.insert(offset, message);
-                state.offset += 1;
-            }
-            Request::Poll { offsets } => {
-                debug!(?offsets, "Poll logs");
-
-                let msgs = offsets
-                    .into_iter()
-                    .filter_map(|(key, val)| {
-                        states.get(&key).map(|state| {
-                            (
-                                key,
-                                state
-                                    .logs
-                                    .range(val..)
-                                    .map(|(&offset, &message)| Log { offset, message })
-                                    .collect(),
-                            )
-                        })
-                    })
-                    .collect();
-                node.reply(&msg, Response::PollOk { msgs }).await?;
-            }
-
-            Request::CommitOffsets { offsets } => {
-                debug!(?offsets, "Commit offsets");
-
-                for (key, val) in offsets {
-                    if let Some(mut state) = states.get_mut(&key) {
-                        state.committed_offset = val;
-                    }
-                }
-                node.reply(&msg, Response::CommitOffsetsOk {}).await?;
-            }
-            Request::ListCommittedOffsets { keys } => {
-                debug!(?keys, "List committed offsets");
-
-                let offsets = keys
-                    .into_iter()
-                    .filter_map(|key| states.get(&key).map(|state| (key, state.committed_offset)))
-                    .collect();
-
-                node.reply(&msg, Response::ListCommittedOffsetsOk { offsets })
-                    .await?;
-            }
+            Request::Send { key, msg: message } => handle_send(key, message, &node, &msg).await,
+            Request::Poll { offsets } => handle_poll(offsets, &node, &msg).await,
+            Request::CommitOffsets { offsets } => handle_commit(offsets, &node, &msg).await,
+            Request::ListCommittedOffsets { keys } => handle_list_committed(keys, node, msg).await,
         },
     }
+}
 
-    Ok(())
+#[instrument("Send", skip(node, msg))]
+async fn handle_send(
+    key: CompactString,
+    message: u64,
+    node: &Arc<Node>,
+    msg: &Message<Value>,
+) -> Result<(), NodeError> {
+    let mut kv_state = node.kv_read("lin-kv", key.as_str()).await?;
+    let mut state = kv_state
+        .as_ref()
+        .map_or_else(|| Ok(State::default()), State::de)?;
+    state.logs.insert(state.offset, message);
+    while !node
+        .kv_cas("lin-kv", key.as_str(), kv_state, state.ser_val()?)
+        .await?
+    {
+        let s = node
+            .kv_read("lin-kv", key.as_str())
+            .await?
+            .with_reason("Failed to read after CAS")?;
+
+        state = State::de(&s)?;
+        state.offset += 1;
+        state.logs.insert(state.offset, message);
+
+        kv_state = Some(s);
+    }
+
+    node.reply(
+        msg,
+        Response::SendOk {
+            offset: state.offset,
+        },
+    )
+    .await
+}
+
+#[instrument("Poll", skip(node, msg))]
+async fn handle_poll(
+    offsets: HashMap<CompactString, u64>,
+    node: &Arc<Node>,
+    msg: &Message<Value>,
+) -> Result<(), NodeError> {
+    let mut msgs = HashMap::new();
+    for (key, val) in offsets {
+        let kv_state = node.kv_read("lin-kv", key.as_str()).await?;
+
+        if let Some(state) = kv_state {
+            let s = State::de(&state)?;
+            msgs.insert(
+                key,
+                s.logs
+                    .range(val..)
+                    .map(|(&offset, &message)| Log { offset, message })
+                    .collect(),
+            );
+        }
+    }
+
+    node.reply(msg, Response::PollOk { msgs }).await
+}
+
+#[instrument("Commit Offsets", skip(node, msg))]
+async fn handle_commit(
+    offsets: HashMap<CompactString, u64>,
+    node: &Arc<Node>,
+    msg: &Message<Value>,
+) -> Result<(), NodeError> {
+    for (key, val) in offsets {
+        let kv_state = node.kv_read("lin-kv", key.as_str()).await?;
+
+        if let Some(mut kv_state) = kv_state {
+            let mut state = State::de(&kv_state)?;
+            state.committed_offset = val;
+            while !node
+                .kv_cas("lin-kv", key.as_str(), kv_state, state.ser_val()?)
+                .await?
+            {
+                let s = node
+                    .kv_read("lin-kv", key.as_str())
+                    .await?
+                    .with_reason("Failed to read after CAS")?;
+
+                state = State::de(&s)?;
+                state.committed_offset = val;
+
+                kv_state = s;
+            }
+        }
+    }
+
+    node.reply(msg, Response::CommitOffsetsOk {}).await
+}
+
+#[instrument("List Committed Offsets", skip(node, msg))]
+async fn handle_list_committed(
+    keys: Vec<CompactString>,
+    node: Arc<Node>,
+    msg: Message<Value>,
+) -> Result<(), NodeError> {
+    let mut offsets = HashMap::new();
+    for key in keys {
+        let kv_state = node.kv_read("lin-kv", key.as_str()).await?;
+
+        if let Some(state) = kv_state {
+            let s = State::de(&state)?;
+            offsets.insert(key, s.committed_offset);
+        }
+    }
+
+    node.reply(&msg, Response::ListCommittedOffsetsOk { offsets })
+        .await
 }

@@ -1,5 +1,8 @@
+use std::fmt::Debug;
+
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tracing::{debug, debug_span, instrument};
 
 use crate::{
     error::{JsonDeError, NodeError, RpcError},
@@ -9,7 +12,7 @@ use crate::{
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum SeqKvRequest {
+pub enum KvRequest {
     Read {
         key: Value,
     },
@@ -27,7 +30,7 @@ pub enum SeqKvRequest {
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum SeqKvResponse {
+pub enum KvResponse {
     ReadOk { value: Value },
     WriteOk,
     CasOk,
@@ -35,60 +38,95 @@ pub enum SeqKvResponse {
 }
 
 impl Node {
-    pub fn handle_seqkv(&self, msg: Message<Value>) -> Result<(), NodeError> {
-        match SeqKvResponse::de(&msg.body.payload)? {
-            SeqKvResponse::ReadOk { value } => self.ack(msg, Ok(value)),
-            SeqKvResponse::WriteOk => self.ack(msg, Ok(json!(null))),
-            SeqKvResponse::CasOk => self.ack(msg, Ok(json!(null))),
-            SeqKvResponse::Error { code, text } => match code {
-                20 => self.ack(msg, Err(RpcError::KeyNotFound(text))),
-                22 => self.ack(msg, Err(RpcError::CasFailed(text))),
-                c => self.ack(msg, Err(RpcError::Unknown(c, text))),
-            },
+    pub fn handle_kv(&self, msg: Message<Value>) -> Result<(), NodeError> {
+        match KvResponse::de(&msg.body.payload)? {
+            KvResponse::ReadOk { value } => {
+                let _span = debug_span!("KV read ok", ?value).entered();
+                self.ack(msg, Ok(value))
+            }
+            KvResponse::WriteOk => {
+                let _span = debug_span!("KV write ok").entered();
+                self.ack(msg, Ok(json!(null)))
+            }
+            KvResponse::CasOk => {
+                let _span = debug_span!("KV cas ok").entered();
+                self.ack(msg, Ok(json!(null)))
+            }
+            KvResponse::Error { code, text } => {
+                let _span = debug_span!("KV error", code, text).entered();
+                match code {
+                    20 => self.ack(msg, Err(RpcError::KeyNotFound)),
+                    22 => self.ack(msg, Err(RpcError::CasFailed(text))),
+                    _ => self.ack(msg, Err(RpcError::Unknown(code, text))),
+                }
+            }
         }
     }
 
-    pub async fn seqkv_read(&self, key: impl Into<Value>) -> Result<Option<Value>, NodeError> {
+    #[instrument("KV read", skip(self))]
+    pub async fn kv_read(
+        &self,
+        svc: &str,
+        key: impl Into<Value> + Debug,
+    ) -> Result<Option<Value>, NodeError> {
         match self
-            .rpc("seq-kv".into(), SeqKvRequest::Read { key: key.into() })
+            .rpc(svc.into(), KvRequest::Read { key: key.into() })
             .await?
         {
             Ok(v) => Ok(Some(v)),
-            Err(RpcError::KeyNotFound(_)) => Ok(None),
+            Err(RpcError::KeyNotFound) => Ok(None),
             Err(e) => Err(NodeError::new_with("Unexpected response from seq-kv", e)),
         }
     }
 
-    pub async fn seqkv_write(
+    #[instrument("KV write", skip(self))]
+    pub async fn kv_write(
         &self,
-        key: impl Into<Value>,
-        val: impl Into<Value>,
-    ) -> Result<Result<Value, RpcError>, NodeError> {
-        self.rpc(
-            "seq-kv".into(),
-            SeqKvRequest::Write {
-                key: key.into(),
-                value: val.into(),
-            },
-        )
-        .await
+        svc: &str,
+        key: impl Into<Value> + Debug,
+        val: impl Into<Value> + Debug,
+    ) -> Result<(), NodeError> {
+        match self
+            .rpc(
+                svc.into(),
+                KvRequest::Write {
+                    key: key.into(),
+                    value: val.into(),
+                },
+            )
+            .await?
+        {
+            Ok(_) => Ok(()),
+            Err(e) => Err(NodeError::new_with("Unexpected response from seq-kv", e)),
+        }
     }
 
-    pub async fn seqkv_cas(
+    #[instrument("KV cas", skip(self))]
+    pub async fn kv_cas(
         &self,
-        key: impl Into<Value>,
-        from: impl Into<Value>,
-        to: impl Into<Value>,
-    ) -> Result<Result<Value, RpcError>, NodeError> {
-        self.rpc(
-            "seq-kv".into(),
-            SeqKvRequest::Cas {
-                key: key.into(),
-                from: from.into(),
-                to: to.into(),
-                create_if_not_exists: Some(true),
-            },
-        )
-        .await
+        svc: &str,
+        key: impl Into<Value> + Debug,
+        from: impl Into<Value> + Debug,
+        to: impl Into<Value> + Debug,
+    ) -> Result<bool, NodeError> {
+        match self
+            .rpc(
+                svc.into(),
+                KvRequest::Cas {
+                    key: key.into(),
+                    from: from.into(),
+                    to: to.into(),
+                    create_if_not_exists: Some(true),
+                },
+            )
+            .await?
+        {
+            Ok(_) => Ok(true),
+            Err(RpcError::CasFailed(msg)) => {
+                debug!(msg, "CAS failed");
+                Ok(false)
+            }
+            Err(e) => Err(NodeError::new_with("Unexpected response from seq-kv", e)),
+        }
     }
 }

@@ -40,7 +40,7 @@ pub enum Response {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> miette::Result<()> {
-    init_tracing();
+    init_tracing()?;
 
     let peers = Arc::new(RwLock::new(vec![]));
     let messages = Arc::new(RwLock::new(SetU32::new()));

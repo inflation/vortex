@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::{debug, info, instrument};
 use vortex::{
-    error::{JsonDeError, NodeError, WithReason},
+    error::{JsonDeError, NodeError},
     init_tracing,
     message::Message,
     node::Node,
@@ -28,7 +28,7 @@ enum Response {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> miette::Result<()> {
-    init_tracing();
+    init_tracing()?;
 
     let (node, mut rx) = Node::new_arc()?;
     let (c_tx, mut c_rx) = tokio::sync::mpsc::channel(1);
@@ -59,26 +59,31 @@ async fn main() -> miette::Result<()> {
 #[instrument(skip(node))]
 async fn handle_msg(msg: Message<Value>, node: Arc<Node>) -> Result<(), NodeError> {
     match msg.src.as_str() {
-        "seq-kv" => node.handle_seqkv(msg)?,
+        "seq-kv" => node.handle_kv(msg)?,
         _ => match Request::de(&msg.body.payload)? {
             Request::Add { delta } => {
                 debug!(delta, "Adding to counter");
                 let id = node.id.as_str();
-                let val = node.seqkv_read(id).await?.map(u64::de).unwrap_or(Ok(0))?;
-                node.seqkv_write(id, val + delta)
+                let val = node
+                    .kv_read("seq-kv", id)
                     .await?
-                    .with_reason("seq-kv write failed")?;
+                    .map(u64::de)
+                    .unwrap_or(Ok(0))?;
+                node.kv_write("seq-kv", id, val + delta).await?;
                 node.reply(&msg, Response::AddOk).await?;
             }
             Request::Read => {
                 debug!("Reading counter");
-                node.seqkv_write(format!("random:{}", rand::thread_rng().gen::<u32>()), 0)
-                    .await?
-                    .with_reason("Failed to write barrier")?;
+                node.kv_write(
+                    "seq-kv",
+                    format!("barrier:{}", rand::thread_rng().gen::<u32>()),
+                    0,
+                )
+                .await?;
 
                 let mut value = 0;
                 for id in &node.node_ids {
-                    value += match node.seqkv_read(id.as_str()).await? {
+                    value += match node.kv_read("seq-kv", id.as_str()).await? {
                         Some(v) => u64::de(v)?,
                         None => {
                             info!("Key not found: {id}");

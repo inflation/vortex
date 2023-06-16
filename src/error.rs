@@ -77,6 +77,15 @@ where
     }
 }
 
+impl<T> WithReason<T> for Option<T> {
+    fn with_reason(self, reason: impl Into<CompactString>) -> Result<T, NodeError> {
+        self.ok_or_else(|| NodeError {
+            reason: reason.into(),
+            source: None,
+        })
+    }
+}
+
 pub trait JsonDeError<T> {
     fn de(src: impl Borrow<Value>) -> Result<T, NodeError>;
 }
@@ -122,8 +131,8 @@ where
 #[diagnostic(code(rpc))]
 pub enum RpcError {
     #[error("Key not found")]
-    KeyNotFound(String),
-    #[error("CAS error")]
+    KeyNotFound,
+    #[error("CAS error: {0}")]
     CasFailed(String),
     #[error("Unknown error, code: {0}")]
     Unknown(u8, String),

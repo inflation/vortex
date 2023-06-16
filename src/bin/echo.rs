@@ -24,7 +24,7 @@ enum Response {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> miette::Result<()> {
-    init_tracing();
+    init_tracing()?;
 
     let (node, mut rx) = Node::new_arc()?;
     let (c_tx, mut c_rx) = tokio::sync::mpsc::channel(1);
