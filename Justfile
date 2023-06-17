@@ -1,8 +1,8 @@
 MAELSTROM_BIN := "/opt/apps/maelstrom/maelstrom"
-TARGET_DIR := "target/release"
+TARGET_DIR := "target/debug"
 
 build target:
-    cargo build --bin {{target}} --release
+    cargo build --bin {{target}}
 
 echo: (build "echo")
     {{MAELSTROM_BIN}} test -w echo --bin {{TARGET_DIR}}/echo \

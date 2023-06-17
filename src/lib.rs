@@ -23,7 +23,7 @@ pub fn init_tracing() -> miette::Result<()> {
     let tracer = opentelemetry_otlp::new_pipeline()
         .tracing()
         .with_exporter(opentelemetry_otlp::new_exporter().tonic())
-        .install_batch(opentelemetry::runtime::Tokio)
+        .install_batch(opentelemetry::runtime::TokioCurrentThread)
         .into_diagnostic()?;
 
     tracing_subscriber::registry()
@@ -84,7 +84,7 @@ where
 
                         tokio::spawn(async move {
                             if let Err(e) = func(msg, node).await {
-                                _ = c_tx.send(e).await;
+                                _ =  c_tx.send(e).await;
                             }
                         });
                     },

@@ -1,10 +1,7 @@
 use core::fmt;
 use std::{
     io::Write,
-    sync::{
-        atomic::{AtomicU32, Ordering},
-        Arc,
-    },
+    sync::atomic::{AtomicU32, Ordering},
     time::Duration,
 };
 
@@ -12,7 +9,7 @@ use compact_str::{format_compact, CompactString};
 use dashmap::DashMap;
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
-use tracing::{debug, error};
+use tracing::{debug, error, info, instrument, Span};
 
 use crate::{
     error::{JsonSerError, NodeError, RpcError, WithReason},
@@ -31,6 +28,7 @@ pub struct Node {
 }
 
 impl Node {
+    #[instrument("Init", fields(id))]
     pub fn new() -> Result<(Self, mpsc::Receiver<Message<Value>>), NodeError> {
         let mut line = String::new();
         std::io::stdin()
@@ -40,6 +38,8 @@ impl Node {
 
         let init_msg: Message<Init> =
             serde_json::from_str(&line).with_reason("Failed to parse init message")?;
+        debug!(msg = line, "Received init message");
+        Span::current().record("id", init_msg.body.payload.node_id.as_str());
         let reply = Message {
             src: init_msg.dst,
             dst: init_msg.src,
@@ -58,6 +58,8 @@ impl Node {
         tokio::task::spawn_blocking(|| stdin(tx_in));
         tokio::task::spawn_blocking(|| stdout(rx_out));
 
+        info!("Node initialized");
+
         Ok((
             Self {
                 id: init_msg.body.payload.node_id,
@@ -68,11 +70,6 @@ impl Node {
             },
             rx_in,
         ))
-    }
-
-    pub fn new_arc() -> Result<(Arc<Self>, mpsc::Receiver<Message<Value>>), NodeError> {
-        let (node, rx) = Self::new()?;
-        Ok((Arc::new(node), rx))
     }
 
     pub async fn send(&self, peer: CompactString, msg: impl Payload) -> Result<(), NodeError> {
@@ -162,7 +159,7 @@ impl Node {
         }
     }
 
-    pub fn ack(&self, msg: Message<Value>, val: Result<Value, RpcError>) -> Result<(), NodeError> {
+    pub fn ack(&self, msg: &Message<Value>, val: Result<Value, RpcError>) -> Result<(), NodeError> {
         match msg.body.in_reply_to {
             Some(reply) => {
                 let token = format_compact!("{}:{reply}", msg.src);

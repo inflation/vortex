@@ -94,17 +94,20 @@ impl<T> JsonDeError<T> for T
 where
     T: serde::de::DeserializeOwned,
 {
+    #[track_caller]
     fn de(src: impl Borrow<Value>) -> Result<T, NodeError> {
         let src = src.borrow();
         T::deserialize(src).map_err(|e| NodeError {
-            reason: format_compact!("Failed to deserialize: {src:#?}"),
+            reason: format_compact!("Failed to deserialize: {src}"),
             source: Some(e.into()),
         })
     }
 }
 
 pub trait JsonSerError<T> {
+    #[track_caller]
     fn ser_val(&self) -> Result<Value, NodeError>;
+    #[track_caller]
     fn ser_str(&self) -> Result<String, NodeError>;
 }
 

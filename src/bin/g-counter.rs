@@ -34,10 +34,10 @@ async fn main() -> miette::Result<()> {
 
 async fn handle_msg(msg: Message<Value>, node: Arc<Node>) -> Result<(), NodeError> {
     match msg.src.as_str() {
-        "seq-kv" => node.handle_kv(msg),
+        "seq-kv" => node.handle_kv(&msg),
         _ => match Request::de(&msg.body.payload)? {
             Request::Add { delta } => handle_add(delta, &node, &msg).await,
-            Request::Read => handle_read(node, msg).await,
+            Request::Read => handle_read(&node, &msg).await,
         },
     }
 }
@@ -56,7 +56,7 @@ async fn handle_add(delta: u64, node: &Arc<Node>, msg: &Message<Value>) -> Resul
 }
 
 #[instrument("Read", skip(msg))]
-async fn handle_read(node: Arc<Node>, msg: Message<Value>) -> Result<(), NodeError> {
+async fn handle_read(node: &Arc<Node>, msg: &Message<Value>) -> Result<(), NodeError> {
     node.kv_write(
         "seq-kv",
         format!("barrier:{}", rand::thread_rng().gen::<u32>()),
@@ -74,5 +74,5 @@ async fn handle_read(node: Arc<Node>, msg: Message<Value>) -> Result<(), NodeErr
             }
         };
     }
-    node.reply(&msg, Response::ReadOk { value }).await
+    node.reply(msg, Response::ReadOk { value }).await
 }

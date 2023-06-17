@@ -66,13 +66,13 @@ async fn handle_msg(
 ) -> Result<(), NodeError> {
     match Request::de(&msg.body.payload)? {
         Request::Broadcast { message } => handle_broadcast(&buffer, message, &node, &msg).await,
-        Request::BroadcastOk => handle_broadcast_ok(&node, msg),
+        Request::BroadcastOk => handle_broadcast_ok(&node, &msg),
         Request::BroadcastBatch { messages: batch } => {
             handle_broadcast_batch(&messages, &batch, buffer, &node, &msg).await
         }
-        Request::BroadcastBatchOk => handle_broadcast_batch_ok(&node, msg),
+        Request::BroadcastBatchOk => handle_broadcast_batch_ok(&node, &msg),
         Request::Read => handle_read(messages, &node, &msg).await,
-        Request::Topology { ref topology } => handle_topology(topology, &node, peers, msg).await,
+        Request::Topology { ref topology } => handle_topology(topology, &node, &peers, &msg).await,
     }
 }
 
@@ -88,7 +88,7 @@ async fn handle_broadcast(
 }
 
 #[instrument("Broadcast Ok", skip(msg))]
-fn handle_broadcast_ok(node: &Arc<Node>, msg: Message<Value>) -> Result<(), NodeError> {
+fn handle_broadcast_ok(node: &Arc<Node>, msg: &Message<Value>) -> Result<(), NodeError> {
     node.ack(msg, Ok(json!(null)))
 }
 
@@ -110,7 +110,7 @@ async fn handle_broadcast_batch(
 }
 
 #[instrument("Broadcast Batch Ok", skip(msg))]
-fn handle_broadcast_batch_ok(node: &Arc<Node>, msg: Message<Value>) -> Result<(), NodeError> {
+fn handle_broadcast_batch_ok(node: &Arc<Node>, msg: &Message<Value>) -> Result<(), NodeError> {
     node.ack(msg, Ok(json!(null)))
 }
 
@@ -128,13 +128,13 @@ async fn handle_read(
 async fn handle_topology(
     topology: &HashMap<CompactString, Vec<CompactString>>,
     node: &Arc<Node>,
-    peers: Arc<RwLock<Vec<CompactString>>>,
-    msg: Message<Value>,
+    peers: &Arc<RwLock<Vec<CompactString>>>,
+    msg: &Message<Value>,
 ) -> Result<(), NodeError> {
     if let Some(p) = topology.get(&node.id) {
         *peers.write() = p.clone();
     }
-    node.reply(&msg, Response::TopologyOk).await
+    node.reply(msg, Response::TopologyOk).await
 }
 
 async fn handle_batch_sending(

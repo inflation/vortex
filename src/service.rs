@@ -38,7 +38,7 @@ pub enum KvResponse {
 }
 
 impl Node {
-    pub fn handle_kv(&self, msg: Message<Value>) -> Result<(), NodeError> {
+    pub fn handle_kv(&self, msg: &Message<Value>) -> Result<(), NodeError> {
         match KvResponse::de(&msg.body.payload)? {
             KvResponse::ReadOk { value } => self.ack(msg, Ok(value)),
             KvResponse::WriteOk => self.ack(msg, Ok(json!(null))),
