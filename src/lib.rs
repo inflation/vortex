@@ -11,6 +11,7 @@ use miette::IntoDiagnostic;
 
 use node::Node;
 use serde_json::Value;
+use tracing::info;
 use tracing_subscriber::{prelude::*, EnvFilter};
 
 pub mod error;
@@ -20,22 +21,25 @@ pub mod node;
 pub mod service;
 
 pub fn init_tracing() -> miette::Result<()> {
-    let tracer = opentelemetry_otlp::new_pipeline()
-        .tracing()
-        .with_exporter(opentelemetry_otlp::new_exporter().tonic())
-        .install_batch(opentelemetry::runtime::TokioCurrentThread)
-        .into_diagnostic()?;
-
-    tracing_subscriber::registry()
+    let otel = if std::env::var_os("OTEL_SERVICE_NAME").is_some() {
+        let tracer = opentelemetry_otlp::new_pipeline()
+            .tracing()
+            .with_exporter(opentelemetry_otlp::new_exporter().tonic())
+            .install_batch(opentelemetry::runtime::TokioCurrentThread)
+            .into_diagnostic()?;
+        Some(tracing_opentelemetry::layer().with_tracer(tracer))
+    } else {
+        None
+    };
+    let reg = tracing_subscriber::registry()
         .with(EnvFilter::try_from_default_env().unwrap_or(EnvFilter::new("INFO")))
-        .with(tracing_opentelemetry::layer().with_tracer(tracer))
         .with(
             tracing_subscriber::fmt::layer()
                 .with_writer(std::io::stderr)
                 .pretty(),
         )
-        .init();
-
+        .with(otel);
+    tracing::subscriber::set_global_default(reg).into_diagnostic()?;
     Ok(())
 }
 
@@ -65,6 +69,8 @@ where
     F: Fn(Message<Value>, Arc<Node>) -> FutF + Send + Sync + Clone + 'static,
     FutF: Future<Output = Result<(), NodeError>> + Send + Sync,
 {
+    info!("Starting node...");
+
     let (node, mut rx) = {
         let (node, rx) = Node::new()?;
         (Arc::new(node), rx)
@@ -73,7 +79,7 @@ where
 
     let (c_tx, mut c_rx) = tokio::sync::mpsc::channel(1);
 
-    let res = async move {
+    let fut = async move {
         let res = loop {
             tokio::select! {
                 msg = rx.recv() => match msg {
@@ -100,5 +106,5 @@ where
         Ok(res?)
     };
 
-    Ok(Main { node: n, fut: res })
+    Ok(Main { node: n, fut })
 }

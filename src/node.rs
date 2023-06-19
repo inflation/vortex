@@ -55,8 +55,8 @@ impl Node {
         let (tx_in, rx_in) = mpsc::channel(8);
         let (tx_out, rx_out) = mpsc::channel(8);
 
-        tokio::task::spawn_blocking(|| stdin(tx_in));
-        tokio::task::spawn_blocking(|| stdout(rx_out));
+        std::thread::spawn(|| stdin(tx_in));
+        std::thread::spawn(|| stdout(rx_out));
 
         info!("Node initialized");
 
