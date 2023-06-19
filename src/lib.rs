@@ -66,7 +66,7 @@ pub fn main_loop<F, FutF>(
     func: F,
 ) -> Result<Main<impl Future<Output = miette::Result<()>>>, NodeError>
 where
-    F: Fn(Message<Value>, Arc<Node>) -> FutF + Send + Sync + Clone + 'static,
+    F: FnOnce(Message<Value>, Arc<Node>) -> FutF + Send + Sync + Clone + 'static,
     FutF: Future<Output = Result<(), NodeError>> + Send + Sync,
 {
     info!("Starting node...");

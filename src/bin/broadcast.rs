@@ -50,9 +50,7 @@ async fn main() -> miette::Result<()> {
 
     let p = peers.clone();
     let b = buffer.clone();
-    let main = main_loop(move |msg, node| {
-        handle_msg(msg, node, peers.clone(), messages.clone(), buffer.clone())
-    })?;
+    let main = main_loop(move |msg, node| handle_msg(msg, node, peers.clone(), messages, buffer))?;
     tokio::spawn(handle_batch_sending(p, b, main.node.clone()));
     main.await
 }

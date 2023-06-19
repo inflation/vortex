@@ -65,7 +65,7 @@ async fn main() -> miette::Result<()> {
     init_tracing()?;
 
     let logs = Arc::new(DashMap::new());
-    main_loop(move |msg, node| handle_msg(msg, node, logs.clone()))?.await
+    main_loop(move |msg, node| handle_msg(msg, node, logs))?.await
 }
 
 async fn handle_msg(
