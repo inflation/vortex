@@ -98,24 +98,13 @@ async fn handle_send(
     msg: &Message<Value>,
     logs: &Arc<State>,
 ) -> Result<(), NodeError> {
-    let key_offset = format_compact!("{key}:offset");
-    let mut kv_offset = node.kv_read("lin-kv", key_offset.as_str()).await?;
-    let mut offset = kv_offset.as_ref().map_or_else(|| Ok(0), u64::de)?;
-    offset += 1;
+    let key_offset = format_compact!("offset:{key}");
+    let offset = node
+        .kv_fetch_and("lin-kv", key_offset.as_str(), |offset| {
+            *offset += 1;
+        })
+        .await?;
 
-    while !node
-        .kv_cas("lin-kv", key_offset.as_str(), kv_offset, offset)
-        .await?
-    {
-        let s = node
-            .kv_read("lin-kv", key_offset.as_str())
-            .await?
-            .with_reason("Failed to read after CAS")?;
-        offset = u64::de(&s)?;
-        offset += 1;
-
-        kv_offset = Some(s);
-    }
     logs.entry(key).or_default().insert(offset, message);
 
     node.reply(msg, Response::SendOk { offset }).await
@@ -140,7 +129,10 @@ async fn handle_poll(
                 },
             )
             .await
-            .and_then(|q| q.with_reason("Failed to query").and_then(Logs::de))
+            .and_then(|q| {
+                q.with_reason(format_compact!("Failed to query node {}", id.as_str()))
+                    .and_then(Logs::de)
+            })
         })
         .collect::<FuturesUnordered<_>>()
         .try_fold(
@@ -153,6 +145,7 @@ async fn handle_poll(
             },
         )
         .await?;
+
     offsets.into_iter().for_each(|(key, offset)| {
         if let Some(log) = logs.get(&key) {
             queries.entry(key).or_default().extend(log.range(offset..))
@@ -174,7 +167,7 @@ async fn handle_commit(
     msg: &Message<Value>,
 ) -> Result<(), NodeError> {
     for (key, val) in offsets {
-        let key = format_compact!("{key}:committed");
+        let key = format_compact!("committed:{key}");
         let kv_committed = node.kv_read("lin-kv", key.as_str()).await?;
 
         if let Some(mut kv_committed) = kv_committed {
@@ -216,7 +209,7 @@ async fn handle_list_committed(
     let offsets = keys
         .into_iter()
         .map(|key| async move {
-            let k = format_compact!("{key}:committed");
+            let k = format_compact!("committed:{key}");
             let kv_committed = node.kv_read("lin-kv", k.as_str()).await;
             kv_committed
                 .transpose()

@@ -1,11 +1,11 @@
 use std::fmt::Debug;
 
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
 use tracing::{debug, instrument};
 
 use crate::{
-    error::{JsonDeError, NodeError, RpcError},
+    error::{JsonDeError, JsonSerError, NodeError, RpcError, WithReason},
     message::Message,
     node::Node,
 };
@@ -116,5 +116,36 @@ impl Node {
             }
             Err(e) => Err(NodeError::new_with("Unexpected response from seq-kv", e)),
         }
+    }
+
+    #[instrument("KV fetch-and", skip(self, func))]
+    pub async fn kv_fetch_and<T>(
+        &self,
+        svc: &str,
+        key: impl Into<Value> + Debug + Clone,
+        mut func: impl FnMut(&mut T),
+    ) -> Result<T, NodeError>
+    where
+        T: Default + Debug + Clone + DeserializeOwned + Serialize,
+    {
+        let mut kv_val = self.kv_read(svc, key.clone()).await?;
+        let mut val = kv_val.as_ref().map_or_else(|| Ok(T::default()), T::de)?;
+        func(&mut val);
+
+        while !self
+            .kv_cas(svc, key.clone(), kv_val, val.ser_val()?)
+            .await?
+        {
+            let new = self
+                .kv_read(svc, key.clone())
+                .await?
+                .with_reason("Failed to read after CAS")?;
+            val = T::de(&new)?;
+            func(&mut val);
+
+            kv_val = Some(new);
+        }
+
+        Ok(val)
     }
 }

@@ -1,9 +1,10 @@
-use std::sync::Arc;
+use std::{future, sync::Arc};
 
+use futures::{stream::FuturesUnordered, TryStreamExt};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tracing::{info, instrument};
+use tracing::instrument;
 use vortex::{
     error::{JsonDeError, NodeError},
     init_tracing, main_loop,
@@ -45,12 +46,10 @@ async fn handle_msg(msg: Message<Value>, node: Arc<Node>) -> Result<(), NodeErro
 #[instrument("Add", skip(msg))]
 async fn handle_add(delta: u64, node: &Arc<Node>, msg: &Message<Value>) -> Result<(), NodeError> {
     let id = node.id.as_str();
-    let val = node
-        .kv_read("seq-kv", id)
-        .await?
-        .map(u64::de)
-        .unwrap_or(Ok(0))?;
-    node.kv_write("seq-kv", id, val + delta).await?;
+    node.kv_fetch_and::<u64>("seq-kv", id, |val| {
+        *val += delta;
+    })
+    .await?;
 
     node.reply(msg, Response::AddOk).await
 }
@@ -64,15 +63,22 @@ async fn handle_read(node: &Arc<Node>, msg: &Message<Value>) -> Result<(), NodeE
     )
     .await?;
 
-    let mut value = 0;
-    for id in &node.node_ids {
-        value += match node.kv_read("seq-kv", id.as_str()).await? {
-            Some(v) => u64::de(v)?,
-            None => {
-                info!("Key not found: {id}");
-                0
+    let value = node
+        .node_ids
+        .iter()
+        .map(|id| async move {
+            node.kv_read("seq-kv", id.as_str())
+                .await
+                .and_then(|v| v.map(u64::de).transpose())
+        })
+        .collect::<FuturesUnordered<_>>()
+        .try_fold(0, |mut acc, x| {
+            if let Some(x) = x {
+                acc += x;
             }
-        };
-    }
+            future::ready(Ok(acc))
+        })
+        .await?;
+
     node.reply(msg, Response::ReadOk { value }).await
 }
